@@ -215,4 +215,4 @@ if __name__ == "__main__":
     key = bool(gate.key())
     print("\n  Study app: http://127.0.0.1:%s" % os.environ.get("PORT", "5000"))
     print("  Gemini key:", "found" if key else "MISSING -> copy .env.example to .env and paste your key", "\n")
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), threaded=True, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), threaded=True, debug=False)
