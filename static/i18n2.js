@@ -1,0 +1,36 @@
+Object.assign(I18N.tr, {
+ setupT:"Hoş geldin! İlk kurulum", setupS:"Yönetici (admin) hesabını oluştur. Şifren şifrelenerek (hash) kaydedilir ve bu sayfa bir daha açılmaz.", loginT:"Giriş yap", username:"Kullanıcı adı", password:"Şifre", password2:"Şifre (tekrar)",
+ createAdmin:"Yönetici hesabını oluştur", loginBtn:"Giriş", logout:"Çıkış", err_bad_username:"Kullanıcı adı 3-32 karakter olmalı (harf, rakam, _ . -).", err_weak_password:"Şifre kısa: admin için en az 8, diğerleri için en az 6 karakter.",
+ err_exists:"Bu kullanıcı adı zaten var.", err_bad_login:"Kullanıcı adı veya şifre yanlış.", err_too_many:"Çok fazla deneme. 5 dakika sonra tekrar dene.", err_mismatch:"Şifreler aynı değil.", err_setup_closed:"Kurulum zaten tamamlandı.",
+ err_forbidden:"Buna iznin yok.", err_no_permission:"Ders yüklemek için kendi API anahtarını eklemelisin.", err_auth:"Oturum kapandı.", sessionLost:"Oturum kapandı, tekrar giriş yap.",
+ account:"Hesap", changePw:"Şifreyi değiştir", oldPw:"Eski şifre", newPw:"Yeni şifre", save:"Kaydet", pwChanged:"Şifre değişti ✅",
+ ownKeyTitle:"Kendi API anahtarın", sharedKeyTitle:"Ortak API anahtarı (arkadaşlarla paylaşılır)", ownKeyNote:"Kendi anahtarını eklersen ders yükleyebilir ve yapay zekâ ayarlarını görürsün. Yüklediğin dersleri sadece sen görürsün; paylaşımı yönetici açar.",
+ usingShared:"Şu an yönetici anahtarı kullanılıyor.", usingOwn:"Kendi anahtarın kullanılıyor.", usingAdmin:"Bu anahtar tüm arkadaşlar için ortak anahtardır (kimse göremez).",
+ tabLearn:"Öğren", tabProfile:"Profil", tabShop:"Mağaza", tabAdmin:"Yönetim",
+ shopT:"Mağaza", shopS:"Elmasla can satın al. Elmaslar XP'den gelir: her 10 XP = 1 💎.", buyHeart:"1 can", buyFull:"Tüm canlar", free:"Ücretsiz", buy:"Satın al", heartsFull:"Canların zaten dolu ❤️", noGems:"Yeterli elmasın yok 💎",
+ bought:"Satın alındı ❤️", heartRegen:"Canın bittiyse her 30 dakikada 1 can kendiliğinden gelir.", noHearts:"Canın bitti! Mağazadan can al.", goShop:"Mağazaya git", err_no_hearts:"Canın bitti.", err_no_gems:"Yeterli elmasın yok.", err_hearts_full:"Canların dolu.",
+ adminTools:"Admin araçları (kendine)", addGems:"Elmas", addXp:"XP", addHearts:"Can", give:"Ekle", granted:"Eklendi ✅", yourStats:"Durumun",
+ adminT:"Yönetim paneli", users:"Kullanıcılar", newUser:"Yeni arkadaş hesabı", createUser:"Hesap oluştur", userCreated:"Hesap oluşturuldu ✅", resetPw:"Şifreyi sıfırla", disable:"Devre dışı bırak", enable:"Etkinleştir", delUser:"Hesabı sil",
+ delUserAsk:"Bu hesap ve tüm dersleri/ilerlemesi silinsin mi?", adminBadge:"admin", ownKeyBadge:"kendi anahtarı", disabledB:"kapalı", lessonsAdmin:"Dersler ve görünürlük", visibleTo:"Kimler görsün?", everyone:"Herkes", onlyOwner:"Sadece sahibi (ve admin)",
+ saveShare:"Kaydet", shared:"Paylaşım kaydedildi ✅", ownerL:"Sahibi", aiSettings:"Yapay zekâ ayarları", aiSettingsS:"Ortak anahtar ve model ⚙️ ayarlarından yönetilir. Arkadaşlar anahtarı göremez.", openSettings:"⚙️ Ayarları aç", noUsers:"Henüz arkadaş hesabı yok.", noLessons:"Henüz ders yok.",
+ waitLesson:"Sana açılmış ders yok. Yöneticiden ders paylaşmasını iste, bir .foxy dosyası aktar ya da kendi API anahtarını ekle.", lostHeart:"−1 ❤️", activeLesson:"Aktif ders",
+ sharedLbl:"paylaşımlı", private:"özel"
+});
+Object.assign(I18N.ar, {
+ setupT:"مرحبًا! الإعداد الأول", setupS:"أنشئ حساب المدير (الأدمن). تُحفظ كلمة المرور مشفرة (Hash) ولن تُفتح هذه الصفحة مرة أخرى.", loginT:"تسجيل الدخول", username:"اسم المستخدم", password:"كلمة المرور", password2:"كلمة المرور (تأكيد)",
+ createAdmin:"أنشئ حساب المدير", loginBtn:"دخول", logout:"خروج", err_bad_username:"اسم المستخدم 3-32 حرفًا (أحرف وأرقام و _ . -).", err_weak_password:"كلمة المرور قصيرة: 8 أحرف للأدمن و6 للبقية على الأقل.",
+ err_exists:"اسم المستخدم موجود بالفعل.", err_bad_login:"اسم المستخدم أو كلمة المرور خاطئة.", err_too_many:"محاولات كثيرة. حاول بعد 5 دقائق.", err_mismatch:"كلمتا المرور غير متطابقتين.", err_setup_closed:"تم الإعداد مسبقًا.",
+ err_forbidden:"ليست لديك صلاحية لذلك.", err_no_permission:"لرفع الدروس أضف مفتاح API الخاص بك.", err_auth:"انتهت الجلسة.", sessionLost:"انتهت الجلسة، سجّل الدخول من جديد.",
+ account:"الحساب", changePw:"تغيير كلمة المرور", oldPw:"كلمة المرور القديمة", newPw:"كلمة المرور الجديدة", save:"حفظ", pwChanged:"تم تغيير كلمة المرور ✅",
+ ownKeyTitle:"مفتاح API الخاص بك", sharedKeyTitle:"مفتاح API المشترك (لكل الأصدقاء)", ownKeyNote:"إذا أضفت مفتاحك تستطيع رفع الدروس وتظهر لك إعدادات الذكاء الاصطناعي. الدروس التي ترفعها لا يراها غيرك؛ والمدير هو من يختار من يشاركها.",
+ usingShared:"يُستخدم الآن مفتاح المدير.", usingOwn:"يُستخدم مفتاحك الخاص.", usingAdmin:"هذا هو المفتاح المشترك لكل الأصدقاء (لا يراه أحد).",
+ tabLearn:"تعلّم", tabProfile:"الملف", tabShop:"المتجر", tabAdmin:"الإدارة",
+ shopT:"المتجر", shopS:"اشترِ القلوب بالجواهر. الجواهر تأتي من النقاط: كل 10 نقاط = 1 💎.", buyHeart:"قلب واحد", buyFull:"كل القلوب", free:"مجاني", buy:"شراء", heartsFull:"قلوبك ممتلئة ❤️", noGems:"جواهرك لا تكفي 💎",
+ bought:"تم الشراء ❤️", heartRegen:"إذا انتهت قلوبك يعود قلب واحد تلقائيًا كل 30 دقيقة.", noHearts:"انتهت قلوبك! اشترِ من المتجر.", goShop:"اذهب للمتجر", err_no_hearts:"انتهت قلوبك.", err_no_gems:"جواهرك لا تكفي.", err_hearts_full:"قلوبك ممتلئة.",
+ adminTools:"أدوات الأدمن (لنفسك)", addGems:"جواهر", addXp:"نقاط", addHearts:"قلوب", give:"إضافة", granted:"تمت الإضافة ✅", yourStats:"وضعك",
+ adminT:"لوحة الإدارة", users:"المستخدمون", newUser:"حساب صديق جديد", createUser:"إنشاء الحساب", userCreated:"تم إنشاء الحساب ✅", resetPw:"إعادة تعيين كلمة المرور", disable:"تعطيل", enable:"تفعيل", delUser:"حذف الحساب",
+ delUserAsk:"هل تريد حذف هذا الحساب وكل دروسه وتقدمه؟", adminBadge:"أدمن", ownKeyBadge:"مفتاح خاص", disabledB:"معطّل", lessonsAdmin:"الدروس ومن يراها", visibleTo:"من يراه؟", everyone:"الجميع", onlyOwner:"صاحبه فقط (والأدمن)",
+ saveShare:"حفظ", shared:"تم حفظ المشاركة ✅", ownerL:"صاحبه", aiSettings:"إعدادات الذكاء الاصطناعي", aiSettingsS:"المفتاح المشترك والنموذج يُدارَان من ⚙️ الإعدادات. الأصدقاء لا يرون المفتاح.", openSettings:"⚙️ افتح الإعدادات", noUsers:"لا توجد حسابات أصدقاء بعد.", noLessons:"لا توجد دروس بعد.",
+ waitLesson:"لا توجد دروس مفتوحة لك. اطلب من المدير مشاركة درس، أو استورد ملف .foxy، أو أضف مفتاح API الخاص بك.", lostHeart:"−1 ❤️", activeLesson:"الدرس الحالي",
+ sharedLbl:"مشترك", private:"خاص"
+});

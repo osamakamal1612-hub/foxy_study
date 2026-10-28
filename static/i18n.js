@@ -37,6 +37,7 @@ tr: {
  exportBtn:"Dersi dosya olarak indir", importBtn:"Ders dosyası içe aktar", importHint:"Biri sana .foxy dosyası gönderdiyse buradan yükle — yapay zekâya gitmeden açılır.", importDone:"Ders açıldı ✨", err_bad_file:"Bu dosya geçerli bir ders dosyası değil.", err_not_ready:"Önce tüm aşamaların hazır olmasını bekle.", err_locked:"Bu henüz kilitli.", exported:"Dosya indirildi 📦",
  volume:"Ses seviyesi", pokes:["Hihi, gıdıklanıyorum!","Hey! 😄","Çalışmaya devam!","Beni sevdin mi? 🧡"], gotoQ:"Soruya git", reconnect:"Tekrar bağlan",
  modelTitle:"Yapay zekâ modeli", modelLite:"Flash-Lite (günlük limit çok daha yüksek ✅)", modelFlash:"Flash (günlük limit düşük)", modelFetch:"Hesabımdaki modelleri getir", modelFetching:"Getiriliyor…", modelNote:"Limit dolunca otomatik olarak {m} modeline geçilir. Limitler her gün gece yarısı (Pasifik saati) yenilenir.", modelDone:"Model kaydedildi", modelExhausted:"bugünlük doldu", err_bad_model:"Geçersiz model adı.",
+ autoModel:"✨ Otomatik (önerilen)", modelNoteAuto:"Otomatik mod: ders hazırlarken Flash (daha kaliteli), cevap kontrolü ve sohbette Flash-Lite (limiti çok yüksek). Biri dolarsa diğerine geçer. Elle seçersen otomatik mod kapanır.", clearAll:"Hepsini sil", delNotif:"Sil", homeTitle:"Ana sayfa",
  done:"Tamamlandı", qCount:"{n} soru"
 },
 ar: {
@@ -77,5 +78,6 @@ ar: {
  exportBtn:"نزّل الدرس كملف", importBtn:"استيراد ملف درس", importHint:"إذا أرسل لك أحد ملف .foxy ارفعه هنا — يُفتح بدون الذهاب إلى الذكاء الاصطناعي.", importDone:"تم فتح الدرس ✨", err_bad_file:"هذا الملف ليس ملف درس صالحًا.", err_not_ready:"انتظر حتى تصبح كل المراحل جاهزة.", err_locked:"هذا مقفل بعد.", exported:"تم تنزيل الملف 📦",
  volume:"مستوى الصوت", pokes:["هههه، أنت تدغدغني!","مرحبًا! 😄","واصل الدراسة!","هل تحبني؟ 🧡"], gotoQ:"اذهب للسؤال", reconnect:"أعد الاتصال",
  modelTitle:"نموذج الذكاء الاصطناعي", modelLite:"Flash-Lite (حد يومي أكبر بكثير ✅)", modelFlash:"Flash (حد يومي منخفض)", modelFetch:"اجلب النماذج المتاحة في حسابي", modelFetching:"جارٍ الجلب…", modelNote:"عند انتهاء الحد يتحول الموقع تلقائيًا إلى النموذج {m}. تتجدد الحدود كل يوم عند منتصف الليل (توقيت المحيط الهادئ).", modelDone:"تم حفظ النموذج", modelExhausted:"انتهى حده اليوم", err_bad_model:"اسم النموذج غير صالح.",
+ autoModel:"✨ تلقائي (موصى به)", modelNoteAuto:"الوضع التلقائي: Flash عند تجهيز الدروس (جودة أعلى)، وFlash-Lite عند التصحيح والدردشة (حده أكبر بكثير). إذا انتهى أحدهما ينتقل للآخر. إذا اخترت يدويًا يتوقف الوضع التلقائي.", clearAll:"حذف الكل", delNotif:"حذف", homeTitle:"الصفحة الرئيسية",
  done:"مكتمل", qCount:"{n} سؤال"
 }};

@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: foxy-study
+    runtime: docker
+    plan: starter            # a persistent disk needs a paid instance
+    disk: {name: data, mountPath: /data, sizeGB: 1}
+    envVars:
+      - {key: APP_SECRET, generateValue: true}
+      - {key: COOKIE_SECURE, value: "1"}

@@ -1,21 +1,22 @@
 "use strict";
 const $ = (s, r=document) => r.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const AUTH = {user: null};
 let ST = null, PREV = null, lang = "tr", pollT = null, failN = 0, inflight = false, again = false;
-const V = {view:"map", sid:null, qi:0, sec:0, exam:null, edit:false, live:false, draft:""};
+const V = {view:"map", sid:null, qi:0, sec:0, exam:null, edit:false, live:false, draft:"", drafts:{}};
 const t = (k, p={}) => { let s = (I18N[lang]||{})[k] ?? I18N.tr[k] ?? k; if (typeof s === "string") for (const a in p) s = s.replace("{"+a+"}", p[a]); return s; };
 const PASS = 75;
 
 async function api(path, body, method) {
-  const o = {method: method || (body !== undefined ? "POST" : "GET"), headers: {}};
+  const o = {method: method || (body !== undefined ? "POST" : "GET"), headers: {"X-Requested-With": "foxy"}};
   if (body instanceof FormData) o.body = body;
   else if (body !== undefined) { o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
   const r = await fetch(path, o);
+  if (r.status === 401 && !/\/api\/(login|setup)$/.test(path)) { onAuthLost(); throw new Error("auth"); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok && !j.error) throw new Error("http " + r.status);
   return j;
 }
-
 /* ---------- helpers ---------- */
 function fmt(txt) {
   const lines = esc(txt).split("\n"); let out = "", ul = false;
@@ -29,7 +30,7 @@ function fmt(txt) {
 function setIf(el, sig, fn) { if (el && el._sig !== sig) { el._sig = sig; fn(el); return true; } return false; }
 function toast(msg) { const tt = $("#toasts"); while (tt.children.length >= 2) tt.firstChild.remove(); const d = document.createElement("div"); d.className = "toast"; d.textContent = msg; tt.append(d); setTimeout(() => d.remove(), 4000); }
 function confetti() {
-  const cols = ["#58cc02","#1cb0f6","#ffc800","#ff4b4b","#ce82ff","#ff9600"];
+  const cols = {fox: ["#ff9600","#ffc800","#ff4b4b","#ffb84d","#1cb0f6","#ff7a00"], robot: ["#1cb0f6","#58cc02","#8cff4d","#ffc800","#84d8ff","#1899d6"], panda: ["#333","#999","#555","#bbb","#111","#ffc800"]}[document.documentElement.dataset.theme] || ["#ff9600","#ffc800"];
   for (let i = 0; i < 46; i++) { const d = document.createElement("i"); d.className = "conf"; d.style.cssText = `left:${Math.random()*100}vw;background:${cols[i%6]};animation-duration:${1.8+Math.random()*1.6}s;animation-delay:${Math.random()*.5}s`; document.body.append(d); setTimeout(() => d.remove(), 4200); }
 }
 function typeInto(el, full, render) {
@@ -72,6 +73,7 @@ const starsOf = avg => avg === null ? 0 : avg >= 90 ? 3 : avg >= 82 ? 2 : 1;
 /* ---------- state loop (local server only) ---------- */
 async function refresh() {
   clearTimeout(pollT);
+  if (!AUTH.user) return;
   if (inflight) { again = true; return; } inflight = true;
   try { const s = await api("/api/state"); failN = 0; $("#banner").hidden = true; onState(s); }
   catch (e) { failN++; const b = $("#banner"); b.hidden = false; b.textContent = t("offline"); }
@@ -83,13 +85,13 @@ async function refresh() {
 function onState(s) {
   PREV = ST; ST = s; lang = s.settings.lang;
   document.documentElement.lang = lang; document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
-  SFX.setOn(s.settings.sound);
+  SFX.setOn(s.settings.sound); document.documentElement.dataset.theme = s.settings.mascot;
   if (PREV && PREV.settings.active === s.settings.active && PREV.course && s.course) {
     s.course.stages.forEach((st, i) => { const p = PREV.course.stages[i]; if (p && p.status !== "ready" && st.status === "ready" && i > 0) { toast(t("stageReady", {t: st.title})); SFX.play("pop"); } });
   }
   const oldIds = new Set((PREV?.notifications || []).map(n => n.id));
   s.notifications.filter(n => PREV && !oldIds.has(n.id)).slice(0, 3).forEach(n => {
-    if (n.kind === "graded") { if (!(V.view === "quiz" && n.key === curKey())) { toast(t("gradedN", {s: n.score})); SFX.play("ding"); } }
+    if (n.kind === "graded") { if (!(V.view === "quiz" && n.key === curKey())) { toast(t("gradedN", {s: n.score}) + (n.lost_heart ? " · " + t("lostHeart") : "")); SFX.play("ding"); } }
     else if (n.kind === "badge") { toast("🏅 " + t("badgeN", {b: t("b_" + n.badge)})); confetti(); SFX.play("perfect"); }
     else if (n.kind === "lesson_ready") { toast("✨ " + t("lessonReady")); SFX.play("chime"); }
     else if (n.kind === "error") { toast("⚠️ " + t("errN")); SFX.play("oops"); }
@@ -102,39 +104,49 @@ const curKey = () => { if (V.view !== "quiz") return null; const q = currentQids
 /* ---------- render ---------- */
 let chatWait = false;
 function render() {
-  renderTop(); renderWidget(); renderPanels();
-  const root = $("#root");
-  if (!ST.course) { setIf(root, "welcome" + lang, welcome); V.view = "map"; V.live = false; }
+  renderTop(); renderWidget(); renderPanels(); if (typeof renderNav === "function") renderNav();
+  const root = $("#root"), extra = ["shop", "profile", "admin"].includes(V.view);
+  if (!ST.course && !extra) { setIf(root, "welcome" + lang + ST.me.can_upload, welcome); V.view = "map"; V.live = false; }
   else if (V.view === "learn") renderLearn();
   else if (V.view === "quiz") renderQuiz();
   else if (V.view === "results") renderResults();
+  else if (V.view === "shop") renderShop();
+  else if (V.view === "profile") renderProfile();
+  else if (V.view === "admin") renderAdmin();
   else renderMap();
   if (V.view !== "quiz") V.live = false;
   SFX.think((V.view === "quiz" && V.live) || chatWait);
 }
 function renderTop() {
-  const s = ST, st = s.stats, a = s.ai, off = s.settings.offline, L = s.lessons.find(l => l.id === s.settings.active), unread = s.notifications.filter(n => !n.read).length;
-  const aiTxt = {unknown:"🤖 "+t("ai_unknown"), ok:"✅ "+t("ai_ok"), cooling:"⏳ "+t("ai_cool",{s:a.cooldown_left}), quota:"⛔ "+t("ai_quota"), nokey:"🔑 "+t("ai_nokey"), auth:"🔑 "+t("ai_auth"), error:"⚠️ "+t("ai_err"), offline:"✈️ "+t("ai_off")}[a.state] || a.state;
-  setIf($("#top"), [lang, L?.title, st.streak, st.gems, st.xp, st.hearts, a.state, aiTxt, unread, s.settings.mascot, off].join("|"), el => {
-    el.innerHTML = `<div class="brand">${mascotHTML(s.settings.mascot)}<span>${t("appName")}</span></div>
+  const s = ST, st = s.stats, a = s.ai, me = s.me, off = s.settings.offline, L = s.lessons.find(l => l.id === s.settings.active), unread = s.notifications.filter(n => !n.read).length;
+  const ico = {unknown:"🤖", ok:"✅", cooling:"⏳", quota:"⛔", nokey:"🔑", auth:"🔑", error:"⚠️", offline:"✈️"}[a.state] || "🤖";
+  const lbl = {unknown:t("ai_unknown"), ok:t("ai_ok"), cooling:t("ai_cool",{s:a.cooldown_left}), quota:t("ai_quota"), nokey:t("ai_nokey"), auth:t("ai_auth"), error:t("ai_err"), offline:t("ai_off")}[a.state] || a.state;
+  setIf($("#top"), [lang, L?.title, st.streak, st.gems, st.xp, st.hearts, a.state, lbl, unread, s.settings.mascot, off, me.id, me.can_ai, me.is_admin].join("|"), el => {
+    el.innerHTML = `<button class="brand" data-act="home" title="${t("homeTitle")}" aria-label="${t("homeTitle")}">${mascotHTML(s.settings.mascot)}<span>${t("appName")}</span></button>
     <button class="lesson-btn" data-act="lessons" title="${t("history")}">📚 <span>${esc(L ? L.title : t("noLesson"))}</span> ▾</button><div class="spacer"></div>
-    <span class="chip streak" title="${t("streak")}">🔥 ${st.streak}</span><span class="chip gems" title="${t("gems")}">💎 ${st.gems}</span>
-    <span class="chip xp" title="${t("xp")}">⚡ ${st.xp}</span><span class="chip hearts" title="${t("hearts")}">❤️ ${st.hearts}</span>
-    <button class="chip net ${off ? "off" : ""}" data-act="toggleOffline" title="${off ? t("goOnline") : t("goOffline")}">${off ? "✈️ " + t("offlineChip") : "🌐 " + t("onlineChip")}</button>
-    <button class="chip ai ${a.state}" data-act="gear" title="${esc(a.message || t("ai_note"))}">${aiTxt}</button>
+    <span class="chip streak" title="${t("streak")}">🔥 ${st.streak}</span><button class="chip gems" data-act="shop" title="${t("shopT")}">💎 ${st.gems}</button>
+    <span class="chip xp" title="${t("xp")}">⚡ ${st.xp}</span><button class="chip hearts" data-act="shop" title="${t("hearts")}">❤️ ${me.is_admin ? "∞" : st.hearts}</button>
+    ${me.can_ai ? `<button class="chip net ${off ? "off" : ""}" data-act="toggleOffline" title="${off ? t("goOnline") : t("goOffline")}">${off ? "✈️" : "🌐"}<span class="lbl"> ${off ? t("offlineChip") : t("onlineChip")}</span></button>` : ""}
+    <button class="chip ai ${a.state}" data-act="gear" title="${esc(me.can_ai ? (a.message || t("ai_note")) : t("ai_note"))}">${ico}<span class="lbl"> ${lbl}</span></button>
+    ${me.is_admin ? `<button class="icon-btn" data-act="admin" aria-label="${t("adminT")}" title="${t("adminT")}">🛡️</button>` : ""}
     <button class="icon-btn" data-act="bell" aria-label="${t("notifs")}">🔔${unread ? `<i class="badge">${unread}</i>` : ""}</button>
     <button class="icon-btn" data-act="gear" aria-label="${t("settings")}">⚙️</button>`;
   });
 }
 function welcome(el) {
-  el.innerHTML = `<div class="shell center big-mascot" style="padding-top:30px">${mascotHTML(ST.settings.mascot)}<h1>${t("welcomeT")}</h1><p>${t("welcomeS")}</p>
-  <button class="btn" data-act="newLesson">${t("newLesson")}</button><p style="color:var(--mut);font-size:14px">${t("ai_note")}</p></div>`;
+  const me = ST.me;
+  el.innerHTML = `<div class="shell center big-mascot" style="padding-top:30px">${mascotHTML(ST.settings.mascot)}<h1>${t("welcomeT")}</h1><p>${me.can_upload ? t("welcomeS") : t("waitLesson")}</p>
+  <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">${me.can_upload ? `<button class="btn" data-act="newLesson">${t("newLesson")}</button>` : `<button class="btn" data-act="newLesson">📦 ${t("importBtn")}</button><button class="btn ghost" data-act="gear">🔑 ${t("keyOpen")}</button>`}</div><p style="color:var(--mut);font-size:14px">${t("ai_note")}</p></div>`;
 }
 function sideHTML() {
-  const st = ST.stats, goal = 50, pct = Math.min(100, st.daily_xp / goal * 100);
-  const all = ["first_answer","stage1","streak3","streak7","xp100","xp500","perfect","exam"], ico = {first_answer:"🌱",stage1:"🗺️",streak3:"🔥",streak7:"🏅",xp100:"⚡",xp500:"🚀",perfect:"💯",exam:"🏆"};
-  return `<aside class="side"><div class="card"><h3>${t("dailyGoal")} · ${st.daily_xp}/${goal} ⚡</h3><div class="bar"><i style="width:${pct}%"></i></div><p style="margin:8px 0 0;color:var(--mut)">${t("level")} ${Math.floor(st.xp/100)+1}</p></div>
-  <div class="card"><h3>${t("badges")}</h3><div class="badges">${all.map(b => `<div class="bd ${st.badges.includes(b) ? "on" : ""}">${ico[b]}<small>${t("b_"+b)}</small></div>`).join("")}</div></div></aside>`;
+  const st = ST.stats, goal = 50, frac = Math.min(1, st.daily_xp / goal), C = +(2 * Math.PI * 34).toFixed(2), hit = st.daily_xp >= goal;
+  const all = ["first_answer","stage1","streak3","streak7","xp100","xp500","perfect","exam"];
+  const bolt = `<path d="M43 22 31 42h8l-2.500 16L50 38h-8z" transform="translate(-4 -9) scale(.92)" fill="url(#boltg)"/>`;
+  return `<aside class="side"><div class="card goal ${hit ? "hit" : ""}"><h3>${t("dailyGoal")}</h3><div class="goal-row">
+    <svg class="ring-svg" viewBox="0 0 80 80" aria-hidden="true"><defs><linearGradient id="boltg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe56a"/><stop offset="1" stop-color="#f0a000"/></linearGradient></defs>
+      <circle cx="40" cy="40" r="34" class="ring-bg"/><circle cx="40" cy="40" r="34" class="ring-fg" stroke-dasharray="${C}" stroke-dashoffset="${(C * (1 - frac)).toFixed(2)}" transform="rotate(-90 40 40)"/>${bolt}</svg>
+    <div><b class="goal-n">${st.daily_xp}/${goal}</b><div class="mut">XP${hit ? " ✓" : ""}</div><div class="mut">${t("level")} ${Math.floor(st.xp / 100) + 1}</div></div></div></div>
+  <div class="card"><h3>${t("badges")}</h3><div class="badges">${all.map(b => `<div class="bd ${st.badges.includes(b) ? "on" : ""}">${badgeSVG(b)}<small>${t("b_" + b)}</small></div>`).join("")}</div></div></aside>`;
 }
 
 /* ---------- map (duolingo-style path) ---------- */
@@ -180,7 +192,7 @@ function renderMap() {
       const oe = nextO(), ex = P.exams[P.exams.length - 1];
       nodes += `<div class="pn ${allOk ? "cur" : ""}" style="--o:${oe}">${allOk ? reader(oe, -1) : ""}<div class="ring"><button class="node exam ${allPassed() ? "" : "locked"}" data-act="exam">🏆</button></div><div class="pn-title">${t("finalExam")}</div><div class="node-sub">${allPassed() ? t("examS") : t("examNeed")}${ex?.done ? " · ✓" : ""}</div></div>`;
       const ready = c.stages.filter(s => s.status === "ready").length;
-      body = `<div class="unit"><div><h2>${esc(c.title)}</h2><small>${ready}/${c.stages.length} ${t("stages")} · ${t("passNeed")}</small></div><div style="display:flex;gap:8px"><button class="btn ghost" data-act="exportLesson" data-id="${c.id}" title="${t("exportBtn")}">⬇️</button><button class="btn ghost" data-act="newLesson">＋</button></div></div><div class="path">${nodes}</div>`;
+      body = `<div class="unit"><div><h2>${esc(c.title)}</h2><small>${ready}/${c.stages.length} ${t("stages")} · ${t("passNeed")}</small></div><div style="display:flex;gap:8px">${ST.lessons.find(l => l.id === c.id)?.can_manage ? `<button class="btn ghost" data-act="exportLesson" data-id="${c.id}" title="${t("exportBtn")}">⬇️</button>` : ""}<button class="btn ghost" data-act="newLesson">＋</button></div></div><div class="path">${nodes}</div>`;
     }
     el.innerHTML = `<div class="layout"><section>${body}</section>${sideHTML()}</div>`;
   });
@@ -216,7 +228,7 @@ function renderLearn() {
   } else setIf(card, "wait" + V.sec + st.status, el => el.innerHTML = st.status === "paused" ? `<div class="center"><p class="err-text">${esc(aiLineErr(st))}</p><button class="btn red" data-act="retryStage">${t("retry")}</button></div>` : `<div class="center"><div class="spinner"></div><b>${t("writing")}</b></div>`);
   const lastReady = st.status === "ready" && V.sec >= secs.length - 1, can = !!cur;
   setIf($("#lsheet"), [lang, V.sec, can, lastReady, secs.length].join("|"), el => {
-    el.className = "sheet"; el.innerHTML = `<div class="sheet-row"><span>${t("sectionN", {a: Math.min(V.sec+1, total), b: total})}</span><button class="btn" data-act="learnNext" ${can ? "" : "disabled"}>${lastReady ? (st.question_ids.length ? t("toQuestions") : t("finish")) : t("cont")}</button></div>`;
+    el.className = "sheet"; el.innerHTML = `<div class="sheet-row"><span>${V.sec > 0 ? `<button class="btn ghost" data-act="prevSec">${lang === "ar" ? "▶" : "◀"} ${t("prev")}</button> ` : ""}${t("sectionN", {a: Math.min(V.sec+1, total), b: total})}</span><button class="btn" data-act="learnNext" ${can ? "" : "disabled"}>${lastReady ? (st.question_ids.length ? t("toQuestions") : t("finish")) : t("cont")}</button></div>`;
   });
 }
 
@@ -233,8 +245,8 @@ function renderQuiz() {
       <div class="card qcard"><small>${t("qN", {a: V.qi+1, b: qids.length})}</small><h2>${esc(qText(qid))}</h2></div>
       <textarea id="ans" placeholder="${t("yourAnswer")}" ${lang === "ar" ? 'dir="rtl"' : ""}></textarea><div class="sheet" id="qsheet"></div></div>`;
     let lastKey = 0;
-    $("#ans").addEventListener("input", () => { V.draft = $("#ans").value; const n = performance.now(); if (n - lastKey > 70) { lastKey = n; SFX.play("key"); } updateSheet(true); });
-    $("#ans").value = ""; V.draft = ""; V.edit = false;
+    $("#ans").addEventListener("input", () => { V.draft = $("#ans").value; V.drafts[curKey()] = V.draft; const n = performance.now(); if (n - lastKey > 70) { lastKey = n; SFX.play("key"); } updateSheet(true); });
+    V.draft = V.drafts[curKey()] || ""; $("#ans").value = V.draft; V.edit = false;
   }
   updateSheet();
 }
@@ -243,19 +255,21 @@ function updateSheet() {
   const qids = currentQids(), qid = qids[V.qi], r = recOf(qid, V.exam), last = V.qi >= qids.length - 1, ta = $("#ans");
   const showResult = r && !V.edit;
   ta.disabled = !!showResult; if (showResult && ta.value !== r.answer) ta.value = r.answer;
+  const prevBtn = `<button class="btn ghost" data-act="prevQ" ${V.qi === 0 ? "disabled" : ""}>${lang === "ar" ? "▶" : "◀"} ${t("prev")}</button>`;
   const nextTxt = last ? t("finish") : t("next"), cool = ST.ai.state === "cooling" ? `<br><small>⏳ ${t("ai_cool", {s: ST.ai.cooldown_left})}</small>` : "";
   const live = !!(showResult && (r.status === "queued" || r.status === "grading")); V.live = live;
-  const sig = [V.qi, V.exam, r?.status, r?.score, !!V.draft?.trim(), V.edit, lang, cool, r?.error?.kind].join("|");
+  const noHearts = !ST.me.is_admin && ST.stats.hearts <= 0;
+  const sig = [V.qi, V.exam, r?.status, r?.score, !!V.draft?.trim(), V.edit, lang, cool, r?.error?.kind, noHearts].join("|");
   if (!showResult) {
-    setIf(el, sig, e => { e.className = "sheet"; e.innerHTML = `<div class="sheet-row"><span></span><button class="btn" data-act="check" ${V.draft?.trim() ? "" : "disabled"}>${t("check")}</button></div>`; });
+    setIf(el, sig, e => { e.className = noHearts ? "sheet s-bad" : "sheet"; e.innerHTML = noHearts ? `<h3>💔 ${t("noHearts")}</h3><div class="sheet-row">${prevBtn}<button class="btn red" data-act="shop">🛒 ${t("goShop")}</button></div>` : `<div class="sheet-row">${prevBtn}<button class="btn" data-act="check" ${V.draft?.trim() ? "" : "disabled"}>${t("check")}</button></div>`; });
     return;
   }
   setIf(el, sig, e => {
-    if (live) { e.className = "sheet s-wait"; e.innerHTML = `<h3>${r.status === "queued" ? "⏳ " + t("queued") : "🔎 " + t("grading")}</h3><p id="fb" class="cursor"></p><small>${t("skipHint")}</small>${cool}<div class="sheet-row" style="margin-top:10px"><span></span><button class="btn blue" data-act="qNext">${nextTxt}</button></div>`; e._shown = ""; }
-    else if (r.status === "paused") { const off = r.error?.kind === "offline"; e.className = "sheet s-bad"; e.innerHTML = `<h3>${off ? "✈️" : "⚠️"} ${t("paused")}</h3><p>${esc(aiLineErr(r))}</p><div class="sheet-row">${off ? `<button class="btn blue" data-act="toggleOffline">🌐 ${t("reconnect")}</button>` : `<button class="btn red" data-act="retryGrade" data-key="${r.key}">${t("retry")}</button>`}<button class="btn ghost" data-act="qNext">${nextTxt}</button></div>`; }
+    if (live) { e.className = "sheet s-wait"; e.innerHTML = `<h3>${r.status === "queued" ? "⏳ " + t("queued") : "🔎 " + t("grading")}</h3><p id="fb" class="cursor"></p><small>${t("skipHint")}</small>${cool}<div class="sheet-row" style="margin-top:10px">${prevBtn}<button class="btn blue" data-act="qNext">${nextTxt}</button></div>`; e._shown = ""; }
+    else if (r.status === "paused") { const off = r.error?.kind === "offline"; e.className = "sheet s-bad"; e.innerHTML = `<h3>${off ? "✈️" : "⚠️"} ${t("paused")}</h3><p>${esc(aiLineErr(r))}</p><div class="sheet-row">${prevBtn}${off ? `<button class="btn blue" data-act="toggleOffline">🌐 ${t("reconnect")}</button>` : `<button class="btn red" data-act="retryGrade" data-key="${r.key}">${t("retry")}</button>`}<button class="btn ghost" data-act="qNext">${nextTxt}</button></div>`; }
     else {
       const c = scoreClass(r.score); e.className = "sheet s-" + c;
-      e.innerHTML = `<h3>${c === "good" ? "🎉 " + t("great") : c === "mid" ? "👍 " + t("good") : "💪 " + t("wrong")} · ${r.score}/100</h3><p id="fb"></p><div class="sheet-row"><button class="btn ghost" data-act="again">${t("tryAgain")}</button><button class="btn" data-act="qNext">${nextTxt}</button></div>`;
+      e.innerHTML = `<h3>${c === "good" ? "🎉 " + t("great") : c === "mid" ? "👍 " + t("good") : "💪 " + t("wrong")} · ${r.score}/100</h3><p id="fb"></p><div class="sheet-row">${prevBtn}<button class="btn ghost" data-act="again">${t("tryAgain")}</button><button class="btn" data-act="qNext">${nextTxt}</button></div>`;
       $("#fb", e).textContent = r.text;
       if (V.fresh === r.key) { V.fresh = null; SFX.play(r.score >= 100 ? "perfect" : c === "good" ? "good" : c === "mid" ? "mid" : "bad"); reactMascot($("#qm .mascot"), c === "bad" ? "sad" : "celebrate"); if (c === "good") confetti(); }
     }
@@ -269,8 +283,8 @@ async function submitAnswer() {
   const btn = $("[data-act=check]"); if (btn) btn.disabled = true;
   SFX.play("send");
   const j = await api("/api/answer", {lesson: ST.settings.active, qid, answer: val, exam: V.exam || undefined});
-  if (j.ok) { V.fresh = j.key; V.edit = false; reactMascot($("#qm .mascot"), "talk"); await refresh(); }
-  else { toast(t("err_" + j.error)); if (btn) btn.disabled = false; }
+  if (j.ok) { delete V.drafts[curKey()]; V.fresh = j.key; V.edit = false; reactMascot($("#qm .mascot"), "talk"); await refresh(); }
+  else { if (j.error === "no_hearts") { toast("💔 " + t("noHearts")); SFX.play("oops"); ACT.shop(); return; } toast(t("err_" + j.error)); if (btn) btn.disabled = false; }
 }
 function qNext() {
   const qids = currentQids();
@@ -299,7 +313,7 @@ function renderResults() {
 let panel = null, confirmFn = null;
 function renderPanels() {
   const layer = $("#layer");
-  const typing = ["keyin", "vol", "modelsel"].includes(document.activeElement?.id);
+  const typing = ["keyin", "vol", "modelsel", "pwold", "pwnew"].includes(document.activeElement?.id);
   if (panel === "lessons") setIf(layer, "L" + lang + JSON.stringify(ST.lessons) + ST.settings.active, lessonsPanel);
   else if (panel === "bell") setIf(layer, "B" + lang + JSON.stringify(ST.notifications) + JSON.stringify(Object.values(prog()?.answers || {}).map(r => [r.key, r.status, r.text?.length])), bellPanel);
   else if (panel === "gear" && typing) { /* keep what is being typed */ }
@@ -322,8 +336,8 @@ function exitModal() {
   SFX.play("oops");
 }
 function lessonsPanel(el) {
-  el.innerHTML = `<div class="pop"><h3 style="margin:0 0 8px">📚 ${t("history")}</h3>${ST.lessons.map(l => `<div class="row ${l.id === ST.settings.active ? "on" : ""}"><button class="grow" data-act="switch" data-id="${l.id}"><b>${esc(l.title)}</b><small>${l.status === "analyzing" ? t("building") : `${l.ready}/${l.stages} ${t("stages")} · ${l.answered}/${l.total_q}`}</small></button><button class="icon-btn" data-act="exportLesson" data-id="${l.id}" title="${t("exportBtn")}">⬇️</button><button class="icon-btn" data-act="resetLesson" data-id="${l.id}" title="${t("resetLesson")}">↻</button><button class="icon-btn" data-act="delLesson" data-id="${l.id}" aria-label="${t("del")}">🗑</button></div>`).join("") || `<p>${t("noLesson")}</p>`}
-    <button class="btn" style="width:100%;margin-top:10px" data-act="newLesson">＋ ${t("newLesson")}</button></div>`;
+  el.innerHTML = `<div class="pop"><h3 style="margin:0 0 8px">📚 ${t("history")}</h3>${ST.lessons.map(l => `<div class="row ${l.id === ST.settings.active ? "on" : ""}"><button class="grow" data-act="switch" data-id="${l.id}"><b>${esc(l.title)}</b><small>${l.mine ? "" : "👤 " + esc(l.owner_name) + " · "}${l.status === "analyzing" ? t("building") : `${l.ready}/${l.stages} ${t("stages")} · ${l.answered}/${l.total_q}`}</small></button>${l.can_manage ? `<button class="icon-btn" data-act="exportLesson" data-id="${l.id}" title="${t("exportBtn")}">⬇️</button>` : ""}<button class="icon-btn" data-act="resetLesson" data-id="${l.id}" title="${t("resetLesson")}">↻</button>${l.can_manage ? `<button class="icon-btn" data-act="delLesson" data-id="${l.id}" aria-label="${t("del")}">🗑</button>` : ""}</div>`).join("") || `<p>${t("noLesson")}</p>`}
+    <button class="btn" style="width:100%;margin-top:10px" data-act="newLesson">${ST.me.can_upload ? "＋ " + t("newLesson") : "📦 " + t("importBtn")}</button></div>`;
 }
 function bellPanel(el) {
   const items = ST.notifications.map(n => {
@@ -332,43 +346,46 @@ function bellPanel(el) {
     else if (n.kind === "badge") { icon = "🏅"; txt = t("badgeN", {b: t("b_" + n.badge)}); }
     else if (n.kind === "lesson_ready") { icon = "✨"; txt = t("lessonReady"); }
     else if (n.kind === "error") { icon = "⚠️"; txt = t("errN"); }
-    return `<button class="notif ${n.read ? "" : "unread"}" data-act="toggleFb" data-id="${n.id}"><b>${icon} ${txt}</b>${fb && openFb.has(n.id) ? `<div class="fb">${esc(fb)}</div>` : ""}</button>`;
+    return `<div class="notif-wrap"><button class="notif ${n.read ? "" : "unread"}" data-act="toggleFb" data-id="${n.id}"><b>${icon} ${txt}</b>${fb && openFb.has(n.id) ? `<div class="fb">${esc(fb)}</div>` : ""}</button><button class="notif-x" data-act="delNotif" data-id="${n.id}" title="${t("delNotif")}" aria-label="${t("delNotif")}">✕</button></div>`;
   }).join("") || `<p>${t("noNotifs")}</p>`;
-  el.innerHTML = `<div class="pop"><h3 style="margin:0 0 8px">🔔 ${t("notifs")}</h3>${items}</div>`;
+  el.innerHTML = `<div class="pop"><div class="pop-head"><h3>🔔 ${t("notifs")}</h3>${ST.notifications.length ? `<button class="btn ghost small" data-act="clearNotifs">🗑 ${t("clearAll")}</button>` : ""}</div>${items}</div>`;
 }
 const openFb = new Set();
 function gearPanel(el) {
-  const s = ST.settings, a = ST.ai;
-  el.innerHTML = `<div class="pop"><h3 style="margin:0 0 6px">${t("language")}</h3><div class="seg"><button data-act="lang" data-v="tr" class="${s.lang === "tr" ? "on" : ""}">Türkçe</button><button data-act="lang" data-v="ar" class="${s.lang === "ar" ? "on" : ""}">العربية</button></div>
+  const s = ST.settings, a = ST.ai, me = ST.me;
+  const keyLine = me.is_admin ? t("usingAdmin") : me.has_own_key ? t("usingOwn") : t("usingShared");
+  const canClear = me.is_admin ? me.has_own_key : me.has_own_key;
+  el.innerHTML = `<div class="pop"><div class="pop-head"><h3>👤 ${esc(me.username)}${me.is_admin ? " 🛡️" : ""}</h3><button class="btn ghost small" data-act="logout">${t("logout")}</button></div>
+  <h3 style="margin:0 0 6px">${t("language")}</h3><div class="seg"><button data-act="lang" data-v="tr" class="${s.lang === "tr" ? "on" : ""}">Türkçe</button><button data-act="lang" data-v="ar" class="${s.lang === "ar" ? "on" : ""}">العربية</button></div>
   <h3 style="margin:0 0 6px">${t("character")}</h3><div class="seg mpick">${Object.keys(MASCOTS).map(k => `<button data-act="mascot" data-v="${k}" class="${s.mascot === k ? "on" : ""}">${mascotHTML(k)}<div>${MASCOTS[k].name}</div></button>`).join("")}</div>
   <h3 style="margin:0 0 6px">${t("sound")}</h3><div class="seg"><button data-act="sound" class="${s.sound ? "on" : ""}">${s.sound ? "🔊 " + t("on") : "🔇 " + t("off")}</button><input type="range" id="vol" min="0" max="100" value="${Math.round(SFX.vol * 100)}" aria-label="${t("volume")}"></div>
-  <h3 style="margin:0 0 6px">🌐 Internet</h3><div class="seg"><button data-act="toggleOffline" class="${s.offline ? "" : "on"}">${s.offline ? "✈️ " + t("offlineChip") + " — " + t("goOnline") : "🌐 " + t("onlineChip") + " — " + t("goOffline")}</button></div>
-  <h3 style="margin:0 0 6px">🧠 ${t("modelTitle")}</h3>${modelHTML()}
-  <h3 style="margin:0 0 6px">🔑 ${t("keyTitle")}</h3><p style="margin:0 0 6px;color:var(--mut)">${t("keyFrom_" + a.key_source)}${a.key_hint ? " · " + a.key_hint : ""}</p>
+  ${me.can_ai ? `<h3 style="margin:0 0 6px">🌐 Internet</h3><div class="seg"><button data-act="toggleOffline" class="${s.offline ? "" : "on"}">${s.offline ? "✈️ " + t("offlineChip") + " — " + t("goOnline") : "🌐 " + t("onlineChip") + " — " + t("goOffline")}</button></div>
+  <h3 style="margin:0 0 6px">🧠 ${t("modelTitle")}</h3>${modelHTML()}` : ""}
+  <h3 style="margin:0 0 6px">🔑 ${me.is_admin ? t("sharedKeyTitle") : t("ownKeyTitle")}</h3><p style="margin:0 0 6px;color:var(--mut)">${keyLine}${me.key_hint ? " · " + me.key_hint : ""}</p>
   <input class="txt" id="keyin" type="password" autocomplete="off" spellcheck="false" placeholder="${t("keyPh")}"><p class="err-text" id="keyerr"></p>
-  <div class="sheet-row" style="margin-bottom:6px"><button class="btn" data-act="saveKey">${t("keySave")}</button>${a.key_source === "site" ? `<button class="btn ghost" data-act="clearKey">${t("keyRemove")}</button>` : ""}</div>
-  <p style="color:var(--mut);font-size:13px;margin:0 0 12px">${t("keyNote")}</p>
-  <h3 style="margin:0 0 6px">🤖 Gemini</h3><p style="margin:0 0 8px">${aiLine()}</p><button class="btn blue" data-act="testAi" ${V.testing || s.offline ? "disabled" : ""}>${V.testing ? t("ai_testing") : t("ai_test")}</button>
-  <p style="color:var(--mut);font-size:13px">${t("ai_note")}</p></div>`;
+  <div class="sheet-row" style="margin-bottom:6px"><button class="btn" data-act="saveKey">${t("keySave")}</button>${canClear ? `<button class="btn ghost" data-act="clearKey">${t("keyRemove")}</button>` : ""}</div>
+  <p style="color:var(--mut);font-size:13px;margin:0 0 12px">${me.is_admin ? t("keyNote") : t("ownKeyNote")}</p>
+  ${me.can_ai ? `<h3 style="margin:0 0 6px">🤖 Gemini</h3><p style="margin:0 0 8px">${aiLine()}</p><button class="btn blue" data-act="testAi" ${V.testing || s.offline ? "disabled" : ""}>${V.testing ? t("ai_testing") : t("ai_test")}</button><p style="color:var(--mut);font-size:13px">${t("ai_note")}</p>` : `<p style="margin:0 0 8px">${aiLine()}</p>`}
+  <h3 style="margin:12px 0 6px">${t("changePw")}</h3><input class="txt" id="pwold" type="password" autocomplete="current-password" placeholder="${t("oldPw")}"><input class="txt" id="pwnew" type="password" autocomplete="new-password" placeholder="${t("newPw")}" style="margin-top:6px"><p class="err-text" id="pwerr"></p>
+  <button class="btn ghost" data-act="savePw">${t("save")}</button></div>`;
 }
 function modelHTML() {
-  const a = ST.ai, cur = a.primary, list = [["gemini-flash-lite-latest", t("modelLite")], ["gemini-flash-latest", t("modelFlash")]];
+  const a = ST.ai, cur = ST.settings.model || "", list = [["", t("autoModel")], ["gemini-flash-lite-latest", t("modelLite")], ["gemini-flash-latest", t("modelFlash")]];
   (V.models || []).forEach(m => { if (!list.some(x => x[0] === m)) list.push([m, m]); });
-  if (!list.some(x => x[0] === cur)) list.unshift([cur, cur]);
-  const opts = list.map(([v, label]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}${a.exhausted.includes(v) ? " — " + t("modelExhausted") + " ⛔" : ""}</option>`).join("");
-  return `<select class="txt" id="modelsel" aria-label="${t("modelTitle")}">${opts}</select>
+  if (cur && !list.some(x => x[0] === cur)) list.push([cur, cur]);
+  const opts = list.map(([v, label]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}${v && a.exhausted.includes(v) ? " — " + t("modelExhausted") + " ⛔" : ""}</option>`).join("");
+  return `${ST.me.is_admin ? `<p style="color:var(--mut);font-size:13px;margin:0 0 6px">${t("usingAdmin")}</p>` : ""}<select class="txt" id="modelsel" aria-label="${t("modelTitle")}">${opts}</select>
   <div class="sheet-row" style="margin:8px 0"><button class="btn ghost" data-act="fetchModels" ${V.fetching || ST.settings.offline ? "disabled" : ""}>${V.fetching ? t("modelFetching") : t("modelFetch")}</button></div>
-  <p style="color:var(--mut);font-size:13px;margin:0 0 12px">${t("modelNote", {m: a.fallback})}</p>`;
+  <p style="color:var(--mut);font-size:13px;margin:0 0 12px">${cur ? t("modelNote", {m: a.fallback}) : t("modelNoteAuto")}${a.exhausted.length && !cur ? " ⛔ " + a.exhausted.join(", ") : ""}</p>`;
 }
 function newLessonModal() {
   $("#layer").innerHTML = `<div class="scrim"><div class="modal"><h2>${t("newLesson")}</h2>
-  <label class="file"><input type="file" id="fq" accept=".txt,.md,.csv,.pdf,.docx"><b>📝 ${t("upQ")}</b><span id="fqn">${t("chooseFile")}</span></label>
+  ${ST.me.can_upload ? `<label class="file"><input type="file" id="fq" accept=".txt,.md,.csv,.pdf,.docx"><b>📝 ${t("upQ")}</b><span id="fqn">${t("chooseFile")}</span></label>
   <label class="file"><input type="file" id="fn" accept=".txt,.md,.pdf,.docx"><b>📖 ${t("upN")}</b><span id="fnn">${t("chooseFile")}</span></label>
   <input class="txt" id="ftitle" placeholder="${t("upTitle")}"><p class="err-text" id="uerr"></p>
-  <div class="sheet-row" style="margin:10px 0 16px"><button class="btn ghost" data-act="closePanel">${t("cancel")}</button><button class="btn" id="fgo" data-act="upload">${t("create")}</button></div>
+  <div class="sheet-row" style="margin:10px 0 16px"><button class="btn ghost" data-act="closePanel">${t("cancel")}</button><button class="btn" id="fgo" data-act="upload">${t("create")}</button></div>` : `<p class="err-text" id="uerr"></p><p>${t("waitLesson")}</p><div class="sheet-row" style="margin-bottom:10px"><button class="btn ghost" data-act="closePanel">${t("cancel")}</button></div>`}
   <label class="file"><input type="file" id="fi" accept=".foxy,.json"><b>📦 ${t("importBtn")}</b><span>${t("importHint")}</span></label></div></div>`;
-  $("#fq").onchange = e => $("#fqn").textContent = e.target.files[0]?.name || t("chooseFile");
-  $("#fn").onchange = e => $("#fnn").textContent = e.target.files[0]?.name || t("chooseFile");
+  if ($("#fq")) { $("#fq").onchange = e => $("#fqn").textContent = e.target.files[0]?.name || t("chooseFile"); $("#fn").onchange = e => $("#fnn").textContent = e.target.files[0]?.name || t("chooseFile"); }
   $("#fi").onchange = async e => {
     const f = e.target.files[0]; if (!f) return; const fd = new FormData(); fd.append("file", f);
     const j = await api("/api/lessons/import", fd).catch(() => ({ok: false}));
@@ -427,7 +444,8 @@ async function sendChat() {
   const hist = chatHist.slice(-6); let got = "", errored = false;
   try {
     const qid = V.view === "quiz" ? currentQids()[V.qi] : undefined;
-    const r = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({lesson: ST.settings.active, sid: V.sid || undefined, qid, message: text, history: hist})});
+    const r = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json", "X-Requested-With": "foxy"}, body: JSON.stringify({lesson: ST.settings.active, sid: V.sid || undefined, qid, message: text, history: hist})});
+    if (r.status === 401) { onAuthLost(); return; }
     const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
     while (true) {
       const {value, done} = await rd.read(); if (done) break;
@@ -479,6 +497,11 @@ const ACT = {
     const j = await api("/api/exam/start", {lesson: ST.settings.active}); if (!j.ok) return toast(t("err_" + j.error));
     V.exam = j.exam; V.sid = null; V.qi = 0; V.view = "quiz"; SFX.play("fanfare"); $("#root").innerHTML = ""; resetViewCache(); await refresh();
   },
+  home: () => { if (panel === "exit") return; if (panel) closePanel(); if (V.view === "learn" || V.view === "quiz") exitModal(); else if (V.view !== "map") ACT.close(); else { const r = $("#root"); window.scrollTo({top: 0, behavior: "smooth"}); reactMascot($(".brand .mascot"), "celebrate"); } },
+  prevQ: () => { if (V.qi > 0) { V.qi--; V.edit = false; SFX.play("flip"); renderQuiz(); } },
+  prevSec: () => { if (V.sec > 0) { V.sec--; renderLearn(); } },
+  delNotif: async b => { await api("/api/notifications/delete", {ids: [+b.dataset.id]}); SFX.play("pop"); $("#layer")._sig = null; await refresh(); },
+  clearNotifs: async () => { await api("/api/notifications/delete", {all: true}); SFX.play("whoosh"); $("#layer")._sig = null; await refresh(); },
   exit: () => { if (V.view === "learn" || V.view === "quiz") exitModal(); else ACT.close(); },
   endSession: () => { closePanel(); ACT.close(); },
   close: () => { V.view = "map"; resetViewCache(); render(); refresh(); },
@@ -503,7 +526,7 @@ const ACT = {
     $("#layer")._sig = null; await refresh(); },
   saveKey: async () => { const v = $("#keyin").value.trim(), err = $("#keyerr"); if (!v) { err.textContent = t("keyPh"); return; }
     const j = await api("/api/ai/key", {key: v}); if (!j.ok) { err.textContent = t("keyBad"); return; }
-    $("#keyin").value = ""; ["#root", "#top", "#layer"].forEach(x => $(x)._sig = null); await refresh(); ACT.testAi(); },
+    $("#keyin").value = ""; ["#root", "#top", "#layer"].forEach(x => $(x)._sig = null); await refresh(); if (ST.me.can_ai) ACT.testAi(); },
   clearKey: async () => { await api("/api/ai/key", {key: ""}); ["#root", "#top", "#layer"].forEach(x => $(x)._sig = null); await refresh(); },
   testAi: async () => { if (V.testing) return; V.testing = true; $("#layer")._sig = null; render(); try { await api("/api/ai/test", {}); } catch (e) {} V.testing = false; $("#layer")._sig = null; await refresh(); },
 };
@@ -519,4 +542,3 @@ document.addEventListener("change", async e => {
 });
 document.addEventListener("input", e => { if (e.target.id === "vol") { SFX.setVol(e.target.value / 100); SFX.play("pop"); } });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && panel) closePanel(); });
-refresh();

@@ -1,6 +1,7 @@
 flask>=3.0
 requests>=2.31
+cryptography>=42
+gunicorn>=22
 # optional, only if you want to upload PDF / Word files:
 # pypdf
 # python-docx
-gunicorn
