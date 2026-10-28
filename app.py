@@ -410,4 +410,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     print("\n  Study app: http://127.0.0.1:%d" % port)
     print("  First run? Open the page and create the admin account.\n" if not engine.admin_exists() else "")
-    app.run(host=os.environ.get("HOST", "127.0.0.1"), port=port, threaded=True, debug=False)
+    app.run(host=os.environ.get("HOST", "0.0.0.0"), port=port, threaded=True, debug=False)
