@@ -525,20 +525,29 @@ def t_grade(uid, lid, key):
         answer, ui = rec["answer"], LANG_NAME.get(rec.get("lang"), "Turkish"); notes = st["notes"][:9000]; question = q["text"]
         attempt = rec.get("attempt", 1); prev = rec.get("history", [])[-2:]
     prevtxt = "".join(f"\nPREVIOUS ATTEMPT {attempt - len(prev) + i}: {h['answer']}\nYOUR EARLIER FEEDBACK: {h['text']}\n" for i, h in enumerate(prev)) if prev else ""
-    prompt = ("You are a warm, GENEROUS teacher and COACH checking a student's WRITTEN answer. Judge the IDEA, never the exact wording.\n"
-              f"NOTES:\n<<<\n{notes}\n>>>\nQUESTION: {question}\n{prevtxt}\nSTUDENT ANSWER (attempt {attempt}): {answer}\n\n"
-              "Silently decide the 1-3 key ideas a correct answer needs (from the NOTES), then score:\n"
-              "- 100 = all key ideas are there, even if short, paraphrased, in different words, or with typos/grammar mistakes. "
-              "If the answer matches or contains the essence of a model answer, give 100.\n"
-              "- 85-95 = main idea right, only a tiny non-essential detail missing.\n"
-              "- 60-84 = about half of the key ideas.  - 30-59 = vague or partly wrong.  - 0-29 = wrong, off-topic or empty.\n"
-              "Never lower the score for style, length, missing examples, order, or extra correct information.\n"
-              "FEEDBACK RULES: if the score is 100, write ONE short happy sentence. If it is below 100, COACH step by step so the student can reach the full answer:\n"
-              "  1) one short sentence about what is already right (if this is a later attempt, say what was fixed);\n"
-              "  2) 1-3 numbered steps saying exactly what to add or fix NEXT (only the problems that remain);\n"
-              + ("  3) because this is attempt 3 or later, also write the complete model answer in 2-3 sentences;\n" if attempt >= 3 else "  3) give hints, do not write the whole answer yet;\n") +
-              "  4) end with a short encouragement to edit the answer and send it again.\n"
-              f"Write your reply in {ui}, at most 110 words. Use EXACTLY this format:\nSCORE: <integer 0-100>\n<feedback>")
+    
+    mascot = U[uid]["d"].get("mascot", "fox")
+    pname, plook = char_persona(mascot)
+    custom_char = next((c for c in CH["customs"] if c["id"] == mascot), None)
+    persona_desc = custom_char.get("persona", "") if custom_char else plook
+
+    prompt = (
+        f"You are {pname}, and your persona, tone, and style is: {persona_desc}.\n"
+        f"You are checking a student's WRITTEN answer in {ui}. Judge the IDEA, never the exact wording.\n"
+        f"CRITICAL RULE: You MUST write your entire feedback strictly in your unique persona's voice, tone, and dialect , while still accurately grading the content based on the notes.\n\n"
+        f"NOTES:\n<<<\n{notes}\n>>>\nQUESTION: {question}\n{prevtxt}\nSTUDENT ANSWER (attempt {attempt}): {answer}\n\n"
+        "Silently decide the 1-3 key ideas a correct answer needs (from the NOTES), then score:\n"
+        "- 100 = all key ideas are there, even if short, paraphrased, or with typos.\n"
+        "- 85-95 = main idea right, tiny detail missing.\n"
+        "- 60-84 = about half of the key ideas.  - 30-59 = vague.  - 0-29 = wrong.\n"
+        "Never lower the score for style, length, or extra correct information.\n"
+        "FEEDBACK RULES: Write your feedback completely matching your character's voice/dialect/persona:\n"
+        "  1) Say what is right using your character's unique tone;\n"
+        "  2) Give 1-3 steps or hints to fix what's missing in your character's style;\n"
+        + ("  3) because this is attempt 3 or later, also write the complete model answer in your style;\n" if attempt >= 3 else "  3) give hints in your character's voice, do not write the whole answer yet;\n") +
+        "  4) end with encouragement matching your unique personality.\n"
+        f"Write your reply in {ui}, at most 110 words. Use EXACTLY this format:\nSCORE: <integer 0-100>\n<feedback in your unique persona/dialect>"
+    )
     buf, err = "", None
     for _ in range(2):
         buf = ""
