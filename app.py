@@ -71,6 +71,14 @@ def admin_required(f):
     return login_required(w)
 
 
+def staff_required(f):                   # admin or teacher
+    @wraps(f)
+    def w(uid, *a, **kw):
+        if not engine.staff(uid): return fail("forbidden", 403)
+        return f(uid, *a, **kw)
+    return login_required(w)
+
+
 def ai_required(f):                      # AI settings: admin or users with their own key
     @wraps(f)
     def w(uid, *a, **kw):
@@ -132,7 +140,7 @@ def session_info():
 def setup():
     if engine.admin_exists(): return fail("setup_closed", 403)          # the wizard is gone for good once an admin exists
     d = request.get_json(silent=True) or {}
-    try: uid = engine.create_user(d.get("username"), d.get("password") or "", is_admin=True)
+    try: uid = engine.create_user(d.get("username"), d.get("password") or "", "admin")
     except ValueError as e: return fail(str(e))
     engine.migrate_legacy(uid)
     session.clear(); session["uid"] = uid; session.permanent = True
@@ -148,6 +156,7 @@ def login():
     if not uid:
         _fail(key); _fail(request.remote_addr or "?"); return fail("bad_login", 401)
     session.clear(); session["uid"] = uid; session.permanent = True
+    engine.U[uid]["d"]["last_active"] = time.time(); engine.save_user(uid)
     return ok()
 
 
@@ -176,7 +185,7 @@ def state(uid): return jsonify(engine.state(uid))            # never talks to Ge
 def settings(uid):
     d = request.get_json(silent=True) or {}; u = engine.U[uid]["d"]
     if d.get("lang") in ("tr", "ar"): u["lang"] = d["lang"]
-    if d.get("mascot") in engine.MASCOT_NAME: u["mascot"] = d["mascot"]
+    if d.get("mascot") in engine.char_ids(): u["mascot"] = d["mascot"]
     if "sound" in d: u["sound"] = bool(d["sound"])
     if d.get("active"): engine.set_active(uid, d["active"])
     engine.save_user(uid); return ok()
@@ -278,6 +287,14 @@ def shop(uid):
     return ok()
 
 
+@app.post("/api/shop/convert")
+@login_required
+def shop_convert(uid):
+    try: engine.shop_convert(uid, (request.get_json(silent=True) or {}).get("xp"))
+    except (ValueError, TypeError) as e: return fail(str(e))
+    return ok()
+
+
 @app.post("/api/notifications/read")
 @login_required
 def notif_read(uid):
@@ -358,7 +375,7 @@ def admin_overview(uid): return jsonify({"ok": True, **engine.admin_overview()})
 @admin_required
 def admin_create(uid):
     d = request.get_json(silent=True) or {}
-    try: new = engine.create_user(d.get("username"), d.get("password") or "", False)
+    try: new = engine.create_user(d.get("username"), d.get("password") or "", d.get("role") if d.get("role") in ("teacher", "student") else "student")
     except ValueError as e: return fail(str(e))
     return ok(id=new)
 
@@ -397,12 +414,73 @@ def admin_grant(uid, target):
     return ok()
 
 
-@app.post("/api/admin/lessons/<lid>/share")
+@app.post("/api/admin/users/<int:target>/role")
 @admin_required
-def admin_share(uid, lid):
+def admin_role(uid, target):
+    try: engine.set_role(target, (request.get_json(silent=True) or {}).get("role"))
+    except ValueError as e: return fail(str(e))
+    return ok()
+
+
+@app.post("/api/lessons/<lid>/share")
+@staff_required
+def share_lesson(uid, lid):
     d = request.get_json(silent=True) or {}
-    try: engine.set_sharing(lid, d.get("users") or [], d.get("all"))
+    try: engine.set_sharing(uid, lid, d.get("users") or [], d.get("all"))
+    except (ValueError, TypeError) as e: return fail(str(e), 403 if str(e) == "forbidden" else 400)
+    return ok()
+
+
+@app.get("/api/monitor")
+@staff_required
+def monitor(uid): return jsonify({"ok": True, **engine.monitor(uid)})
+
+
+@app.get("/api/characters")
+@login_required
+def characters(uid): return jsonify({"ok": True, **engine.chars_public()})
+
+
+@app.post("/api/admin/characters")
+@admin_required
+def admin_char(uid):
+    try: cid = engine.admin_save_character(request.get_json(silent=True) or {})
     except (ValueError, TypeError) as e: return fail(str(e))
+    return ok(id=cid)
+
+
+@app.delete("/api/admin/characters/<cid>")
+@admin_required
+def admin_char_del(uid, cid):
+    try: engine.admin_delete_character(cid)
+    except ValueError as e: return fail(str(e))
+    return ok()
+
+
+@app.post("/api/admin/theme")
+@admin_required
+def admin_theme(uid):
+    d = request.get_json(silent=True) or {}
+    try: engine.admin_set_theme(d.get("char"), d.get("theme"))
+    except ValueError as e: return fail(str(e))
+    return ok()
+
+
+@app.post("/api/admin/phrases")
+@admin_required
+def admin_phrases(uid):
+    d = request.get_json(silent=True) or {}
+    try: engine.admin_phrase(d.get("action"), d)
+    except ValueError as e: return fail(str(e))
+    return ok()
+
+
+@app.post("/api/admin/phrase_mode")
+@admin_required
+def admin_phrase_mode(uid):
+    d = request.get_json(silent=True) or {}
+    try: engine.admin_phrase_mode(d.get("target"), d.get("mode"))
+    except ValueError as e: return fail(str(e))
     return ok()
 
 
@@ -410,4 +488,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     print("\n  Study app: http://127.0.0.1:%d" % port)
     print("  First run? Open the page and create the admin account.\n" if not engine.admin_exists() else "")
-    app.run(host=os.environ.get("HOST", "0.0.0.0"), port=port, threaded=True, debug=False)
+    app.run(host=os.environ.get("HOST", "127.0.0.1"), port=port, threaded=True, debug=False)

@@ -38,7 +38,16 @@ robot: {name:"Robo", svg:`<svg viewBox="0 0 120 120" aria-hidden="true">
   <circle cx="30" cy="84" r="2" fill="#fff" opacity=".6"/><circle cx="90" cy="84" r="2" fill="#fff" opacity=".6"/>
  </g></svg>`}
 };
-const mascotHTML = (kind, cls="") => `<div class="mascot ${kind} ${cls}" data-kind="${kind}">${MASCOTS[kind].svg}</div>`;
+const CHAR_STATE = {list: [], byId: {}, phrases: [], modes: {}, v: 0};     // filled from /api/characters (built-in + admin-made characters)
+const charInfo = k => CHAR_STATE.byId[k] || {id: k, name: (MASCOTS[k] || {}).name || k, builtin: true, voice: MASCOTS[k] ? k : "fox", anim: "bounce"};
+const charName = k => charInfo(k).name;
+const charList = () => CHAR_STATE.list.length ? CHAR_STATE.list : Object.keys(MASCOTS).map(id => ({id, name: MASCOTS[id].name, builtin: true}));
+function mascotHTML(kind, cls = "") {
+  if (MASCOTS[kind]) return `<div class="mascot ${kind} ${cls}" data-kind="${kind}">${MASCOTS[kind].svg}</div>`;
+  const c = CHAR_STATE.byId[kind];
+  if (c && c.image) return `<div class="mascot custom anim-${c.anim} ${cls}" data-kind="${c.id}"><img src="${c.image}" alt="" draggable="false"></div>`;
+  return mascotHTML("fox", cls);
+}
 function reactMascot(el, anim){            // anim: celebrate | sad | talk
   if(!el) return; el.classList.remove("celebrate","sad"); void el.offsetWidth; el.classList.add(anim);
   setTimeout(()=>el.classList.remove(anim), 1300);

@@ -6,6 +6,41 @@ let ST = null, PREV = null, lang = "tr", pollT = null, failN = 0, inflight = fal
 const V = {view:"map", sid:null, qi:0, sec:0, exam:null, edit:false, live:false, draft:"", drafts:{}};
 const t = (k, p={}) => { let s = (I18N[lang]||{})[k] ?? I18N.tr[k] ?? k; if (typeof s === "string") for (const a in p) s = s.replace("{"+a+"}", p[a]); return s; };
 const PASS = 75;
+const SITE = {fox: {tr: "Foxy Study", ar: "فوكسي ستادي"}, panda: {tr: "Panda Study", ar: "باندا ستادي"}, robot: {tr: "Robo Study", ar: "روبو ستادي"}};
+const siteName = () => { const k = ST?.settings?.mascot || "fox", c = CHAR_STATE.byId[k]; return c && !c.builtin ? (c.title || c.name + " Study") : (SITE[k] || SITE.fox)[lang]; };
+/* ---------- theme: built-in colours, or admin-chosen colours per character ---------- */
+const hex2 = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, t) => { const x = hex2(a), y = hex2(b); return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join(""); };
+const lum = h => { const [r, g, b] = hex2(h).map(v => v / 255); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+const THEME_VARS = ["--pri", "--pri-d", "--pri-l", "--on-pri", "--sec", "--sec-d", "--bg", "--bg2", "--card", "--txt", "--mut", "--line"];
+const paletteVars = th => [th.pri, mix(th.pri, "#000000", .25), mix(th.pri, th.bg, .86), lum(th.pri) > .62 ? "#1b1b1b" : "#ffffff", th.sec, mix(th.sec, "#000000", .2), th.bg, mix(th.bg, th.txt, .05), th.card, th.txt, mix(th.txt, th.bg, .45), mix(th.bg, th.txt, .14)];
+function applyTheme() {
+  const k = ST?.settings?.mascot || "fox", root = document.documentElement, th = CHAR_STATE.byId[k]?.theme; document.title = siteName();
+  root.dataset.theme = MASCOTS[k] ? k : "fox";
+  if (!th) { THEME_VARS.forEach(v => root.style.removeProperty(v)); return; }
+  const vals = paletteVars(th); THEME_VARS.forEach((v, i) => root.style.setProperty(v, vals[i]));
+}
+async function loadChars() {
+  if (CHAR_STATE.loading) return; CHAR_STATE.loading = true;
+  try {
+    const j = await fetch("/api/characters").then(r => r.json());
+    if (j.ok) { CHAR_STATE.list = j.characters; CHAR_STATE.byId = Object.fromEntries(j.characters.map(c => [c.id, c])); CHAR_STATE.phrases = j.phrases; CHAR_STATE.modes = j.modes; CHAR_STATE.v = j.v;
+      ["#top", "#root", "#widget", "#layer", "#nav"].forEach(x => { const e = $(x); if (e) e._sig = null; }); if (ST) { applyTheme(); render(); } }
+  } catch (e) {}
+  CHAR_STATE.loading = false;
+}
+/* phrases the mascot says (admin edits them): random or in order */
+const SEQ = (() => { try { return JSON.parse(localStorage.getItem("foxy_seq") || "{}"); } catch (e) { return {}; } })(), LASTP = {};
+function phraseFor(use, kind) {
+  if (!CHAR_STATE.v) { const a = t(use === "click" ? "pokes" : "cheers"); return a[Math.floor(Math.random() * a.length)]; }
+  const ok = p => (p.lang === "any" || p.lang === lang) && (p.kind === use || p.kind === "both");
+  const own = CHAR_STATE.phrases.filter(p => p.target === kind && ok(p)), common = CHAR_STATE.phrases.filter(p => p.target === "all" && ok(p));
+  const mode = CHAR_STATE.modes[kind] || CHAR_STATE.modes.all || "random", key = kind + ":" + use;
+  const list = mode === "sequence" && own.length ? own : [...own, ...common];     // in order mode a character's own lines form an exact script
+  if (!list.length) return null;
+  if (mode === "sequence") { const i = (SEQ[key] || 0) % list.length; SEQ[key] = i + 1; try { localStorage.setItem("foxy_seq", JSON.stringify(SEQ)); } catch (e) {} return list[i].text; }
+  let i = Math.floor(Math.random() * list.length); if (list.length > 1 && LASTP[key] === i) i = (i + 1) % list.length; LASTP[key] = i; return list[i].text;
+}
 
 async function api(path, body, method) {
   const o = {method: method || (body !== undefined ? "POST" : "GET"), headers: {"X-Requested-With": "foxy"}};
@@ -55,8 +90,8 @@ const stageOfQ = qid => course().stages.find(s => s.question_ids.includes(qid))?
 const recOf = (qid, exam) => prog()?.answers[`${exam || stageOfQ(qid)}:${qid}`];
 const qText = qid => course().questions.find(q => q.id === qid)?.text || "";
 const SS = sid => prog().stage_stats[sid] || {total:0, answered:0, graded:0, avg:null, passed:false};
-const unlocked = i => i === 0 || SS(course().stages[i-1].id).passed;
-const allPassed = () => course() && course().stages.length > 0 && course().stages.every(s => SS(s.id).passed);
+const unlocked = i => i === 0 || ST.me.is_admin || SS(course().stages[i-1].id).passed;
+const allPassed = () => course() && course().stages.length > 0 && (ST.me.is_admin || course().stages.every(s => SS(s.id).passed));
 const currentQids = () => V.exam ? prog().exams.find(e => e.id === V.exam)?.qids || [] : stageById(V.sid)?.question_ids || [];
 const scoreClass = s => s >= 70 ? "good" : s >= 40 ? "mid" : "bad";
 function stageState(s, i) {
@@ -85,7 +120,7 @@ async function refresh() {
 function onState(s) {
   PREV = ST; ST = s; lang = s.settings.lang;
   document.documentElement.lang = lang; document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
-  SFX.setOn(s.settings.sound); document.documentElement.dataset.theme = s.settings.mascot;
+  SFX.setOn(s.settings.sound); applyTheme(); document.title = siteName(); if (s.constants.cv !== CHAR_STATE.v) loadChars();
   if (PREV && PREV.settings.active === s.settings.active && PREV.course && s.course) {
     s.course.stages.forEach((st, i) => { const p = PREV.course.stages[i]; if (p && p.status !== "ready" && st.status === "ready" && i > 0) { toast(t("stageReady", {t: st.title})); SFX.play("pop"); } });
   }
@@ -105,7 +140,7 @@ const curKey = () => { if (V.view !== "quiz") return null; const q = currentQids
 let chatWait = false;
 function render() {
   renderTop(); renderWidget(); renderPanels(); if (typeof renderNav === "function") renderNav();
-  const root = $("#root"), extra = ["shop", "profile", "admin"].includes(V.view);
+  const root = $("#root"), extra = ["shop", "profile", "admin", "monitor"].includes(V.view);
   if (!ST.course && !extra) { setIf(root, "welcome" + lang + ST.me.can_upload, welcome); V.view = "map"; V.live = false; }
   else if (V.view === "learn") renderLearn();
   else if (V.view === "quiz") renderQuiz();
@@ -113,6 +148,7 @@ function render() {
   else if (V.view === "shop") renderShop();
   else if (V.view === "profile") renderProfile();
   else if (V.view === "admin") renderAdmin();
+  else if (V.view === "monitor") renderMonitor();
   else renderMap();
   if (V.view !== "quiz") V.live = false;
   SFX.think((V.view === "quiz" && V.live) || chatWait);
@@ -121,13 +157,14 @@ function renderTop() {
   const s = ST, st = s.stats, a = s.ai, me = s.me, off = s.settings.offline, L = s.lessons.find(l => l.id === s.settings.active), unread = s.notifications.filter(n => !n.read).length;
   const ico = {unknown:"🤖", ok:"✅", cooling:"⏳", quota:"⛔", nokey:"🔑", auth:"🔑", error:"⚠️", offline:"✈️"}[a.state] || "🤖";
   const lbl = {unknown:t("ai_unknown"), ok:t("ai_ok"), cooling:t("ai_cool",{s:a.cooldown_left}), quota:t("ai_quota"), nokey:t("ai_nokey"), auth:t("ai_auth"), error:t("ai_err"), offline:t("ai_off")}[a.state] || a.state;
-  setIf($("#top"), [lang, L?.title, st.streak, st.gems, st.xp, st.hearts, a.state, lbl, unread, s.settings.mascot, off, me.id, me.can_ai, me.is_admin].join("|"), el => {
-    el.innerHTML = `<button class="brand" data-act="home" title="${t("homeTitle")}" aria-label="${t("homeTitle")}">${mascotHTML(s.settings.mascot)}<span>${t("appName")}</span></button>
+  setIf($("#top"), [lang, L?.title, st.streak, st.gems, st.xp, st.xp_avail, st.hearts, a.state, lbl, unread, s.settings.mascot, off, me.id, me.can_ai, me.is_admin, me.is_teacher].join("|"), el => {
+    el.innerHTML = `<button class="brand" data-act="home" title="${t("homeTitle")}" aria-label="${t("homeTitle")}">${mascotHTML(s.settings.mascot)}<span>${siteName()}</span></button>
     <button class="lesson-btn" data-act="lessons" title="${t("history")}">📚 <span>${esc(L ? L.title : t("noLesson"))}</span> ▾</button><div class="spacer"></div>
     <span class="chip streak" title="${t("streak")}">🔥 ${st.streak}</span><button class="chip gems" data-act="shop" title="${t("shopT")}">💎 ${st.gems}</button>
-    <span class="chip xp" title="${t("xp")}">⚡ ${st.xp}</span><button class="chip hearts" data-act="shop" title="${t("hearts")}">❤️ ${me.is_admin ? "∞" : st.hearts}</button>
+    <span class="chip xp" title="${t("xp")}">⚡ ${me.is_admin ? st.xp : st.xp_avail}</span><button class="chip hearts" data-act="shop" title="${t("hearts")}">❤️ ${me.is_admin ? "∞" : st.hearts}</button>
     ${me.can_ai ? `<button class="chip net ${off ? "off" : ""}" data-act="toggleOffline" title="${off ? t("goOnline") : t("goOffline")}">${off ? "✈️" : "🌐"}<span class="lbl"> ${off ? t("offlineChip") : t("onlineChip")}</span></button>` : ""}
     <button class="chip ai ${a.state}" data-act="gear" title="${esc(me.can_ai ? (a.message || t("ai_note")) : t("ai_note"))}">${ico}<span class="lbl"> ${lbl}</span></button>
+    ${me.is_admin || me.is_teacher ? `<button class="icon-btn" data-act="monitor" aria-label="${t("monitorT")}" title="${t("monitorT")}">📊</button>` : ""}
     ${me.is_admin ? `<button class="icon-btn" data-act="admin" aria-label="${t("adminT")}" title="${t("adminT")}">🛡️</button>` : ""}
     <button class="icon-btn" data-act="bell" aria-label="${t("notifs")}">🔔${unread ? `<i class="badge">${unread}</i>` : ""}</button>
     <button class="icon-btn" data-act="gear" aria-label="${t("settings")}">⚙️</button>`;
@@ -141,10 +178,10 @@ function welcome(el) {
 function sideHTML() {
   const st = ST.stats, goal = 50, frac = Math.min(1, st.daily_xp / goal), C = +(2 * Math.PI * 34).toFixed(2), hit = st.daily_xp >= goal;
   const all = ["first_answer","stage1","streak3","streak7","xp100","xp500","perfect","exam"];
-  const bolt = `<path d="M43 22 31 42h8l-2.500 16L50 38h-8z" transform="translate(-4 -9) scale(.92)" fill="url(#boltg)"/>`;
+  const bolt = `<path d="M45 17 27 43h11l-4 20 19-28H42z" fill="url(#boltg)" stroke="#d98900" stroke-width="1.2" stroke-linejoin="round"/>`;
   return `<aside class="side"><div class="card goal ${hit ? "hit" : ""}"><h3>${t("dailyGoal")}</h3><div class="goal-row">
-    <svg class="ring-svg" viewBox="0 0 80 80" aria-hidden="true"><defs><linearGradient id="boltg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe56a"/><stop offset="1" stop-color="#f0a000"/></linearGradient></defs>
-      <circle cx="40" cy="40" r="34" class="ring-bg"/><circle cx="40" cy="40" r="34" class="ring-fg" stroke-dasharray="${C}" stroke-dashoffset="${(C * (1 - frac)).toFixed(2)}" transform="rotate(-90 40 40)"/>${bolt}</svg>
+    <svg class="ring-svg" viewBox="0 0 80 80" aria-hidden="true"><defs><linearGradient id="boltg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff0a0"/><stop offset="1" stop-color="#f29a00"/></linearGradient></defs>
+      <circle cx="40" cy="40" r="34" class="ring-bg"/><circle cx="40" cy="40" r="34" class="ring-fg" stroke-dasharray="${C}" stroke-dashoffset="${(C * (1 - frac)).toFixed(2)}" transform="rotate(-90 40 40)"/><circle cx="40" cy="40" r="28" class="ring-core"/>${bolt}</svg>
     <div><b class="goal-n">${st.daily_xp}/${goal}</b><div class="mut">XP${hit ? " ✓" : ""}</div><div class="mut">${t("level")} ${Math.floor(st.xp / 100) + 1}</div></div></div></div>
   <div class="card"><h3>${t("badges")}</h3><div class="badges">${all.map(b => `<div class="bd ${st.badges.includes(b) ? "on" : ""}">${badgeSVG(b)}<small>${t("b_" + b)}</small></div>`).join("")}</div></div></aside>`;
 }
@@ -243,7 +280,7 @@ function renderQuiz() {
     root.innerHTML = `<div class="shell quiz"><div class="l-top"><button class="x" data-act="exit">✕</button><div class="bar"><i style="width:${V.qi/qids.length*100}%"></i></div><button class="btn ghost" data-act="ask">💬 ${t("ask")}</button></div>
       <div class="talk-row"><div id="qm">${mascotHTML(ST.settings.mascot)}</div><div class="say">${esc(title)}</div></div>
       <div class="card qcard"><small>${t("qN", {a: V.qi+1, b: qids.length})}</small><h2>${esc(qText(qid))}</h2></div>
-      <textarea id="ans" placeholder="${t("yourAnswer")}" ${lang === "ar" ? 'dir="rtl"' : ""}></textarea><div class="sheet" id="qsheet"></div></div>`;
+      <textarea id="ans" placeholder="${t("yourAnswer")}" ${lang === "ar" ? 'dir="rtl"' : ""}></textarea><div id="hist"></div><div class="sheet" id="qsheet"></div></div>`;
     let lastKey = 0;
     $("#ans").addEventListener("input", () => { V.draft = $("#ans").value; V.drafts[curKey()] = V.draft; const n = performance.now(); if (n - lastKey > 70) { lastKey = n; SFX.play("key"); } updateSheet(true); });
     V.draft = V.drafts[curKey()] || ""; $("#ans").value = V.draft; V.edit = false;
@@ -253,23 +290,29 @@ function renderQuiz() {
 function updateSheet() {
   const el = $("#qsheet"); if (!el) return;
   const qids = currentQids(), qid = qids[V.qi], r = recOf(qid, V.exam), last = V.qi >= qids.length - 1, ta = $("#ans");
-  const showResult = r && !V.edit;
-  ta.disabled = !!showResult; if (showResult && ta.value !== r.answer) ta.value = r.answer;
+  const editing = !!(r && V.edit && r.status === "done" && !V.exam), showResult = !!r && !editing;
+  ta.disabled = showResult; if (showResult && ta.value !== r.answer) ta.value = r.answer;
   const prevBtn = `<button class="btn ghost" data-act="prevQ" ${V.qi === 0 ? "disabled" : ""}>${lang === "ar" ? "▶" : "◀"} ${t("prev")}</button>`;
   const nextTxt = last ? t("finish") : t("next"), cool = ST.ai.state === "cooling" ? `<br><small>⏳ ${t("ai_cool", {s: ST.ai.cooldown_left})}</small>` : "";
   const live = !!(showResult && (r.status === "queued" || r.status === "grading")); V.live = live;
   const noHearts = !ST.me.is_admin && ST.stats.hearts <= 0;
-  const sig = [V.qi, V.exam, r?.status, r?.score, !!V.draft?.trim(), V.edit, lang, cool, r?.error?.kind, noHearts].join("|");
+  // earlier attempts and their feedback stay visible under the answer box
+  const att = r ? [...(r.history || [])] : []; if (editing) att.push({answer: r.answer, score: r.score, text: r.text});
+  setIf($("#hist"), JSON.stringify(att) + "|" + lang, h => {
+    h.innerHTML = att.slice().reverse().map((a, i) => `<div class="card hist-item"><div class="hist-h">✏️ ${t("attemptN", {n: att.length - i})} <span class="pill p-${scoreClass(a.score)}">${a.score}</span></div><p class="hist-a"></p><p class="hist-f"></p></div>`).join("");
+    [...h.querySelectorAll(".hist-item")].forEach((d, i) => { const a = att[att.length - 1 - i]; d.querySelector(".hist-a").textContent = a.answer; d.querySelector(".hist-f").textContent = a.text; });
+  });
+  const sig = [V.qi, V.exam, r?.status, r?.score, r?.attempt, !!V.draft?.trim(), editing, lang, cool, r?.error?.kind, noHearts].join("|");
   if (!showResult) {
-    setIf(el, sig, e => { e.className = noHearts ? "sheet s-bad" : "sheet"; e.innerHTML = noHearts ? `<h3>💔 ${t("noHearts")}</h3><div class="sheet-row">${prevBtn}<button class="btn red" data-act="shop">🛒 ${t("goShop")}</button></div>` : `<div class="sheet-row">${prevBtn}<button class="btn" data-act="check" ${V.draft?.trim() ? "" : "disabled"}>${t("check")}</button></div>`; });
+    setIf(el, sig, e => { e.className = noHearts ? "sheet s-bad" : "sheet"; e.innerHTML = noHearts ? `<h3>💔 ${t("noHearts")}</h3><div class="sheet-row">${prevBtn}<button class="btn red" data-act="shop">🛒 ${t("goShop")}</button></div>` : `<div class="sheet-row">${prevBtn}<button class="btn" data-act="check" ${V.draft?.trim() ? "" : "disabled"}>${editing ? t("sendAgain") : t("check")}</button></div>`; });
     return;
   }
   setIf(el, sig, e => {
-    if (live) { e.className = "sheet s-wait"; e.innerHTML = `<h3>${r.status === "queued" ? "⏳ " + t("queued") : "🔎 " + t("grading")}</h3><p id="fb" class="cursor"></p><small>${t("skipHint")}</small>${cool}<div class="sheet-row" style="margin-top:10px">${prevBtn}<button class="btn blue" data-act="qNext">${nextTxt}</button></div>`; e._shown = ""; }
+    if (live) { e.className = "sheet s-wait"; e.innerHTML = `<h3>${r.status === "queued" ? "⏳ " + t("queued") : "🔎 " + t("grading")}</h3><p id="fb" class="cursor"></p><small>${t("waitGrade")}</small>${cool}`; e._shown = ""; }
     else if (r.status === "paused") { const off = r.error?.kind === "offline"; e.className = "sheet s-bad"; e.innerHTML = `<h3>${off ? "✈️" : "⚠️"} ${t("paused")}</h3><p>${esc(aiLineErr(r))}</p><div class="sheet-row">${prevBtn}${off ? `<button class="btn blue" data-act="toggleOffline">🌐 ${t("reconnect")}</button>` : `<button class="btn red" data-act="retryGrade" data-key="${r.key}">${t("retry")}</button>`}<button class="btn ghost" data-act="qNext">${nextTxt}</button></div>`; }
     else {
-      const c = scoreClass(r.score); e.className = "sheet s-" + c;
-      e.innerHTML = `<h3>${c === "good" ? "🎉 " + t("great") : c === "mid" ? "👍 " + t("good") : "💪 " + t("wrong")} · ${r.score}/100</h3><p id="fb"></p><div class="sheet-row">${prevBtn}<button class="btn ghost" data-act="again">${t("tryAgain")}</button><button class="btn" data-act="qNext">${nextTxt}</button></div>`;
+      const c = scoreClass(r.score), canEdit = r.score < 100 && !V.exam; e.className = "sheet s-" + c;
+      e.innerHTML = `<h3>${c === "good" ? "🎉 " + t("great") : c === "mid" ? "👍 " + t("good") : "💪 " + t("wrong")} · ${r.score}/100</h3><p id="fb"></p>${canEdit ? `<p class="edit-hint">${t("editHint")}</p>` : ""}<div class="sheet-row">${prevBtn}${canEdit ? `<button class="btn blue" data-act="edit">✏️ ${t("editAnswer")}</button>` : ""}<button class="btn" data-act="qNext">${nextTxt}</button></div>`;
       $("#fb", e).textContent = r.text;
       if (V.fresh === r.key) { V.fresh = null; SFX.play(r.score >= 100 ? "perfect" : c === "good" ? "good" : c === "mid" ? "mid" : "bad"); reactMascot($("#qm .mascot"), c === "bad" ? "sad" : "celebrate"); if (c === "good") confetti(); }
     }
@@ -357,7 +400,7 @@ function gearPanel(el) {
   const canClear = me.is_admin ? me.has_own_key : me.has_own_key;
   el.innerHTML = `<div class="pop"><div class="pop-head"><h3>👤 ${esc(me.username)}${me.is_admin ? " 🛡️" : ""}</h3><button class="btn ghost small" data-act="logout">${t("logout")}</button></div>
   <h3 style="margin:0 0 6px">${t("language")}</h3><div class="seg"><button data-act="lang" data-v="tr" class="${s.lang === "tr" ? "on" : ""}">Türkçe</button><button data-act="lang" data-v="ar" class="${s.lang === "ar" ? "on" : ""}">العربية</button></div>
-  <h3 style="margin:0 0 6px">${t("character")}</h3><div class="seg mpick">${Object.keys(MASCOTS).map(k => `<button data-act="mascot" data-v="${k}" class="${s.mascot === k ? "on" : ""}">${mascotHTML(k)}<div>${MASCOTS[k].name}</div></button>`).join("")}</div>
+  <h3 style="margin:0 0 6px">${t("character")}</h3><div class="seg mpick">${charList().map(c => `<button data-act="mascot" data-v="${c.id}" class="${s.mascot === c.id ? "on" : ""}">${mascotHTML(c.id)}<div>${esc(c.name)}</div></button>`).join("")}</div>
   <h3 style="margin:0 0 6px">${t("sound")}</h3><div class="seg"><button data-act="sound" class="${s.sound ? "on" : ""}">${s.sound ? "🔊 " + t("on") : "🔇 " + t("off")}</button><input type="range" id="vol" min="0" max="100" value="${Math.round(SFX.vol * 100)}" aria-label="${t("volume")}"></div>
   ${me.can_ai ? `<h3 style="margin:0 0 6px">🌐 Internet</h3><div class="seg"><button data-act="toggleOffline" class="${s.offline ? "" : "on"}">${s.offline ? "✈️ " + t("offlineChip") + " — " + t("goOnline") : "🌐 " + t("onlineChip") + " — " + t("goOffline")}</button></div>
   <h3 style="margin:0 0 6px">🧠 ${t("modelTitle")}</h3>${modelHTML()}` : ""}
@@ -419,26 +462,26 @@ function scheduleBubble(delay) {
   clearTimeout(bubbleT);
   bubbleT = setTimeout(() => {
     const wb = $("#wb"); if (!wb || panel === "chat") return;
-    const m = t("cheers"); wb.innerHTML = `<div class="w-bubble">${esc(m[Math.floor(Math.random() * m.length)])}</div>`;
-    SFX.play("boing"); reactMascot($("#widget .mascot"), "celebrate"); setTimeout(() => { if ($("#wb")) $("#wb").innerHTML = ""; }, 5600);
+    const line = phraseFor("bubble", ST?.settings?.mascot || "fox");
+    if (line) { wb.innerHTML = `<div class="w-bubble">${esc(line)}</div>`; SFX.play("boing"); reactMascot($("#widget .mascot"), "celebrate"); setTimeout(() => { if ($("#wb")) $("#wb").innerHTML = ""; }, 5600); }
     scheduleBubble(22000 + Math.random() * 12000);
   }, delay);
 }
 function pokeMascot(m) {
-  const r = m.getBoundingClientRect(), d = document.createElement("div"), lines = t("pokes");
-  d.className = "poke"; d.textContent = lines[Math.floor(Math.random() * lines.length)]; d.style.left = (r.left + r.width / 2) + "px"; d.style.top = (r.top - 8) + "px";
-  document.body.append(d); setTimeout(() => d.remove(), 1900); reactMascot(m, "celebrate"); SFX.play("giggle");
+  const kind = m.dataset.kind || ST?.settings?.mascot || "fox", r = m.getBoundingClientRect(), line = phraseFor("click", kind);
+  if (line) { const d = document.createElement("div"); d.className = "poke"; d.textContent = line; d.style.left = Math.min(Math.max(r.left + r.width / 2, 90), innerWidth - 90) + "px"; d.style.top = (r.top - 8) + "px"; document.body.append(d); setTimeout(() => d.remove(), 2300); }
+  reactMascot(m, "celebrate"); SFX.play("giggle");
 }
 function chatPanel() {
   const st = V.view !== "map" && V.sid ? stageById(V.sid) : null;
-  $("#layer").innerHTML = `<div class="chat"><header>${mascotHTML(ST.settings.mascot)}<div><b>${MASCOTS[ST.settings.mascot].name}</b><small>${st ? esc(t("ctx", {t: st.title})) : esc(course()?.title || "")}</small></div><button class="x" data-act="closePanel">✕</button></header>
-  <div class="msgs" id="msgs"><div class="msg a">${t("hello")}</div>${chatHist.map(m => `<div class="msg ${m.role === "user" ? "u" : "a"}">${esc(m.text)}</div>`).join("")}</div>
+  $("#layer").innerHTML = `<div class="chat"><header>${mascotHTML(ST.settings.mascot)}<div><b>${esc(charName(ST.settings.mascot))}</b><small>${st ? esc(t("ctx", {t: st.title})) : esc(course()?.title || "")}</small></div><button class="x" data-act="closePanel">✕</button></header>
+  <div class="msgs" id="msgs"><div class="msg a">${t("hello")}</div>${chatHist.length ? "" : `<div class="chips">${[1, 2, 3, 4].map(i => `<button class="chipq" data-act="chip" data-q="${esc(t("q" + i))}">${esc(t("q" + i))}</button>`).join("")}</div>`}${chatHist.map(m => `<div class="msg ${m.role === "user" ? "u" : "a"}">${esc(m.text)}</div>`).join("")}</div>
   <form id="cform"><input id="cin" placeholder="${t("askPh")}" autocomplete="off"><button class="btn" type="submit">${t("send")}</button></form></div>`;
   $("#cform").onsubmit = e => { e.preventDefault(); sendChat(); }; $("#cin").focus(); const m = $("#msgs"); m.scrollTop = m.scrollHeight; renderWidget(); SFX.play("pop");
 }
 async function sendChat() {
   const inp = $("#cin"), text = inp.value.trim(); if (!text || chatBusy) return;
-  inp.value = ""; chatBusy = true; chatWait = true; SFX.think(true); SFX.play("send"); const box = $("#msgs");
+  inp.value = ""; chatBusy = true; chatWait = true; SFX.think(true); SFX.play("send"); const box = $("#msgs"); box.querySelector(".chips")?.remove();
   box.insertAdjacentHTML("beforeend", `<div class="msg u">${esc(text)}</div><div class="msg a" id="cur">…</div>`);
   const cur = $("#cur"); box.scrollTop = box.scrollHeight; reactMascot($(".chat .mascot"), "talk");
   const hist = chatHist.slice(-6); let got = "", errored = false;
@@ -452,7 +495,7 @@ async function sendChat() {
       buf += dec.decode(value, {stream: true}); let i;
       while ((i = buf.indexOf("\n\n")) >= 0) {
         const line = buf.slice(0, i).replace(/^data: /, ""); buf = buf.slice(i + 2); let ev; try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.t) { if (chatWait) { chatWait = false; SFX.think(false); } got += ev.t; cur.textContent = got; SFX.play("blip", ST.settings.mascot); }
+        if (ev.t) { if (chatWait) { chatWait = false; SFX.think(false); } got += ev.t; cur.textContent = got; SFX.play("blip", charInfo(ST.settings.mascot).voice); }
         else if (ev.w) cur.textContent = got || t("waitAi", {s: ev.w});
         else if (ev.error) { errored = true; cur.textContent = got || (ev.error.kind === "offline" ? t("offlineHint") : ev.error.kind === "rate" || ev.error.kind === "quota_day" ? t("waitAi", {s: ev.error.retry || 30}) : t("chatErr")); }
         box.scrollTop = box.scrollHeight;
@@ -498,6 +541,7 @@ const ACT = {
     V.exam = j.exam; V.sid = null; V.qi = 0; V.view = "quiz"; SFX.play("fanfare"); $("#root").innerHTML = ""; resetViewCache(); await refresh();
   },
   home: () => { if (panel === "exit") return; if (panel) closePanel(); if (V.view === "learn" || V.view === "quiz") exitModal(); else if (V.view !== "map") ACT.close(); else { const r = $("#root"); window.scrollTo({top: 0, behavior: "smooth"}); reactMascot($(".brand .mascot"), "celebrate"); } },
+  chip: b => { const i = $("#cin"); if (i) { i.value = b.dataset.q; sendChat(); } },
   prevQ: () => { if (V.qi > 0) { V.qi--; V.edit = false; SFX.play("flip"); renderQuiz(); } },
   prevSec: () => { if (V.sec > 0) { V.sec--; renderLearn(); } },
   delNotif: async b => { await api("/api/notifications/delete", {ids: [+b.dataset.id]}); SFX.play("pop"); $("#layer")._sig = null; await refresh(); },
@@ -509,7 +553,8 @@ const ACT = {
     if (st.status === "ready" && V.sec >= secs.length - 1) { await api("/api/read", {lesson: ST.settings.active, sid: V.sid}); if (st.question_ids.length) { V.view = "quiz"; V.qi = 0; $("#root").innerHTML = ""; resetViewCache(); await refresh(); } else ACT.close(); }
     else { V.sec++; reactMascot($("#lmascot .mascot"), "talk"); renderLearn(); } },
   check: submitAnswer, qNext,
-  again: () => { V.edit = true; const ta = $("#ans"); ta.disabled = false; ta.focus(); V.draft = ta.value; updateSheet(); },
+  edit: () => { V.edit = true; const ta = $("#ans"); ta.disabled = false; V.draft = ta.value; ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); updateSheet(); },
+  again: () => ACT.edit(),
   gotoQ: b => { V.view = "quiz"; V.qi = +b.dataset.i; V.edit = false; $("#root").innerHTML = ""; resetViewCache(); render(); },
   retryStage: async () => { await api("/api/retry", {lesson: ST.settings.active, what: "stage", sid: V.sid}); refresh(); },
   retryAnalyze: async () => { await api("/api/retry", {lesson: ST.settings.active, what: "analyze"}); refresh(); },

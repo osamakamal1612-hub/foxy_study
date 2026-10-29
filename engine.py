@@ -4,6 +4,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from werkzeug.security import generate_password_hash, check_password_hash
 from gemini import gate_for, GeminiError
+from store import Store
 
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR", ROOT / "data"))
@@ -14,7 +15,9 @@ MASCOT_NAME = {"fox": "Foxy", "panda": "Pandi", "robot": "Robo"}
 MASCOT_LOOK = {"fox": "a cheerful fox", "panda": "a sleepy-but-kind panda", "robot": "a friendly little robot"}
 PASS = 75
 HEART_PRICE = 5
+GRADE_FULL_AT = int(os.environ.get("GRADE_FULL_AT", "85"))     # a score >= this counts as 100 (lenient grading)
 HEART_REGEN = 1800            # one free heart every 30 minutes (safety net)
+ROLES = ("admin", "teacher", "student")
 USERNAME_RE = re.compile(r"^[\w.\-]{3,32}$")
 
 
@@ -38,30 +41,19 @@ def dec(s):
     except Exception: return ""
 
 
-# ------------------------------------------------------------------ database
-DB = sqlite3.connect(str(DATA / "app.db"), check_same_thread=False, isolation_level=None)
-DB.row_factory = sqlite3.Row
-DB.execute("PRAGMA journal_mode=WAL"); DB.execute("PRAGMA foreign_keys=ON")
-DB.executescript("""
-CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL COLLATE NOCASE,
-  password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, created REAL, data TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  title TEXT, created REAL, course TEXT NOT NULL, notes TEXT DEFAULT '', shared TEXT NOT NULL DEFAULT '[]', shared_all INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS progress(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, lesson_id TEXT NOT NULL,
-  data TEXT NOT NULL, PRIMARY KEY(user_id, lesson_id));
-CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
-""")
+# ------------------------------------------------------------------ database (SQLite, or Supabase/PostgreSQL if DATABASE_URL is set)
+STORE = Store(DATA)
 
 
 def db(sql, args=()):
-    with LOCK: return DB.execute(sql, args)
+    with LOCK: return STORE.run(sql, args)
 def dball(sql, args=()):
-    with LOCK: return DB.execute(sql, args).fetchall()
+    with LOCK: return STORE.all(sql, args)
 def dbone(sql, args=()):
-    with LOCK: return DB.execute(sql, args).fetchone()
+    with LOCK: return STORE.one(sql, args)
 def get_setting(k, default=""):
     r = dbone("SELECT value FROM settings WHERE key=?", (k,)); return r["value"] if r else default
-def set_setting(k, v): db("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
+def set_setting(k, v): db("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
 def _j(x): return json.dumps(x, ensure_ascii=False)
 
 
@@ -81,13 +73,14 @@ def _load_user(r):
     try: d.update(json.loads(r["data"] or "{}"))
     except Exception: pass
     d["stats"] = {**_new_udata()["stats"], **d.get("stats", {})}
-    U[r["id"]] = {"id": r["id"], "username": r["username"], "is_admin": bool(r["is_admin"]), "disabled": bool(r["disabled"]), "d": d}
+    role = r["role"] if r["role"] in ROLES else ("admin" if r["is_admin"] else "student")
+    U[r["id"]] = {"id": r["id"], "username": r["username"], "role": role, "is_admin": role == "admin", "is_teacher": role == "teacher", "disabled": bool(r["disabled"]), "d": d}
 
 
 def save_user(uid):
     with LOCK:
         u = U.get(uid)
-        if u: db("UPDATE users SET data=?, disabled=?, is_admin=? WHERE id=?", (_j(u["d"]), int(u["disabled"]), int(u["is_admin"]), uid))
+        if u: db("UPDATE users SET data=?, disabled=?, is_admin=?, role=? WHERE id=?", (_j(u["d"]), int(u["disabled"]), int(u["is_admin"]), u["role"], uid))
 
 
 def admin_exists(): return bool(dbone("SELECT 1 FROM users WHERE is_admin=1 LIMIT 1"))
@@ -97,19 +90,28 @@ def check_username(name):
     if not USERNAME_RE.match(name or ""): raise ValueError("bad_username")
 
 
-def create_user(username, password, is_admin=False):
+def create_user(username, password, role="student"):
+    if role is True: role = "admin"
+    if role not in ROLES: raise ValueError("bad_role")
     username = (username or "").strip(); check_username(username)
-    if len(password or "") < (8 if is_admin else 6): raise ValueError("weak_password")
+    if len(password or "") < (8 if role == "admin" else 6): raise ValueError("weak_password")
     with LOCK:
-        if dbone("SELECT 1 FROM users WHERE username=?", (username,)): raise ValueError("exists")
-        cur = db("INSERT INTO users(username,password_hash,is_admin,created,data) VALUES(?,?,?,?,?)",
-                 (username, generate_password_hash(password, method="pbkdf2:sha256:600000"), int(is_admin), time.time(), _j(_new_udata())))
-        _load_user(dbone("SELECT * FROM users WHERE id=?", (cur.lastrowid,)))
-        return cur.lastrowid
+        if dbone("SELECT 1 FROM users WHERE username_lc=?", (username.lower(),)): raise ValueError("exists")
+        rid = STORE.insert_id("INSERT INTO users(username,username_lc,password_hash,is_admin,role,created,data) VALUES(?,?,?,?,?,?,?)",
+                              (username, username.lower(), generate_password_hash(password, method="pbkdf2:sha256:600000"), int(role == "admin"), role, time.time(), _j(_new_udata())))
+        _load_user(dbone("SELECT * FROM users WHERE id=?", (rid,)))
+        return rid
+
+
+def set_role(uid, role):
+    with LOCK:
+        u = U.get(uid)
+        if not u or u["is_admin"] or role not in ("teacher", "student"): raise ValueError("bad_user")
+        u["role"] = role; u["is_teacher"] = role == "teacher"; save_user(uid)
 
 
 def verify_login(username, password):
-    r = dbone("SELECT * FROM users WHERE username=?", ((username or "").strip(),))
+    r = dbone("SELECT * FROM users WHERE username_lc=?", ((username or "").strip().lower(),))
     ok = check_password_hash(r["password_hash"], password or "") if r else check_password_hash(generate_password_hash("x"), "y")
     if not r or not ok or r["disabled"]: return None
     return r["id"]
@@ -148,7 +150,9 @@ def ai_ctx(uid):
     return {"key": admin_key(), "model": get_setting("default_model"), "offline": False, "source": "shared"}
 
 
-def can_ai(uid): u = U[uid]; return u["is_admin"] or bool(dec(u["d"].get("own_key", "")))
+def can_ai(uid): u = U[uid]; return u["is_admin"] or bool(dec(u["d"].get("own_key", "")))      # AI settings (model, offline, test)
+def can_upload(uid): u = U[uid]; return u["is_admin"] or u["is_teacher"] or bool(dec(u["d"].get("own_key", "")))
+def staff(uid): u = U[uid]; return u["is_admin"] or u["is_teacher"]
 
 
 def gen(uid, *a, **kw):
@@ -197,6 +201,7 @@ def _enotify(uid, **kw):
 
 
 def touch_streak(uid):
+    U[uid]["d"]["last_active"] = time.time()
     st = stats(uid)
     if st["last_day"] == _day(): return
     st["streak"] = st["streak"] + 1 if st["last_day"] == _day(1) else 1
@@ -209,10 +214,9 @@ def give_badge(uid, bid):
 
 
 def add_xp(uid, xp, bonus_gems=0):
-    """Gems come from XP: every 10 XP = 1 gem (chests / stage rewards add bonus gems)."""
+    """XP is lifetime progress (level, badges). Gems come from chests / stage rewards and from exchanging XP in the shop."""
     st = stats(uid); touch_streak(uid)
-    st["xp"] += xp; st["daily_xp"] += xp; st["xp_carry"] += xp
-    st["gems"] += st["xp_carry"] // 10 + bonus_gems; st["xp_carry"] %= 10
+    st["xp"] += xp; st["daily_xp"] += xp; st["gems"] += bonus_gems
     if st["xp"] >= 100: give_badge(uid, "xp100")
     if st["xp"] >= 500: give_badge(uid, "xp500")
     if st["streak"] >= 3: give_badge(uid, "streak3")
@@ -236,6 +240,20 @@ def shop_buy(uid, item):
         if not admin and st["gems"] < cost: raise ValueError("no_gems")
         if not admin: st["gems"] -= cost
         st["hearts"] = min(5, st["hearts"] + n); st["hearts_ts"] = time.time(); save_user(uid)
+
+
+def spendable_xp(uid): st = stats(uid); return max(0, st["xp"] - st.get("xp_spent", 0))
+
+
+def shop_convert(uid, xp_amount):
+    """Exchange XP for gems: 10 XP = 1 gem. Spent XP does not lower the level (level uses lifetime XP)."""
+    with LOCK:
+        st = stats(uid); xp_amount = int(xp_amount or 0) // 10 * 10
+        if xp_amount < 10 or xp_amount > 1000000: raise ValueError("bad_amount")
+        if not U[uid]["is_admin"]:
+            if spendable_xp(uid) < xp_amount: raise ValueError("no_xp")
+            st["xp_spent"] = st.get("xp_spent", 0) + xp_amount
+        st["gems"] += xp_amount // 10; save_user(uid)
 
 
 def admin_grant(target, gems=0, xp=0, hearts=0):
@@ -274,7 +292,7 @@ def get_prog(uid, lid):
 def save_progress(uid, lid):
     with LOCK:
         if lid in LES and (uid, lid) in PROG and uid in U:
-            db("INSERT OR REPLACE INTO progress(user_id,lesson_id,data) VALUES(?,?,?)", (uid, lid, _j(PROG[(uid, lid)])))
+            db("INSERT INTO progress(user_id,lesson_id,data) VALUES(?,?,?) ON CONFLICT(user_id,lesson_id) DO UPDATE SET data=excluded.data", (uid, lid, _j(PROG[(uid, lid)])))
 
 
 def save_course(lid):
@@ -330,7 +348,7 @@ def _insert_lesson(uid, course, notes=""):
 
 
 def create_lesson(uid, title, qtext, ntext):
-    if not can_ai(uid): raise ValueError("no_permission")
+    if not can_upload(uid): raise ValueError("no_permission")
     qs = split_questions(qtext)
     if not qs: raise ValueError("no_questions")
     if len(ntext.strip()) < 40: raise ValueError("no_notes")
@@ -505,10 +523,22 @@ def t_grade(uid, lid, key):
         if not st or not q: return
         rec.update(status="grading", text="", score=None, error=None)
         answer, ui = rec["answer"], LANG_NAME.get(rec.get("lang"), "Turkish"); notes = st["notes"][:9000]; question = q["text"]
-    prompt = ("You are a kind teacher checking a student's WRITTEN answer.\n"
-              f"NOTES:\n<<<\n{notes}\n>>>\nQUESTION: {question}\nSTUDENT ANSWER: {answer}\n\n"
-              f"Write your reply in {ui}. Use EXACTLY this format:\nSCORE: <integer 0-100>\n"
-              "<2-4 short encouraging sentences: what is right, what is missing, and a short ideal answer>")
+        attempt = rec.get("attempt", 1); prev = rec.get("history", [])[-2:]
+    prevtxt = "".join(f"\nPREVIOUS ATTEMPT {attempt - len(prev) + i}: {h['answer']}\nYOUR EARLIER FEEDBACK: {h['text']}\n" for i, h in enumerate(prev)) if prev else ""
+    prompt = ("You are a warm, GENEROUS teacher and COACH checking a student's WRITTEN answer. Judge the IDEA, never the exact wording.\n"
+              f"NOTES:\n<<<\n{notes}\n>>>\nQUESTION: {question}\n{prevtxt}\nSTUDENT ANSWER (attempt {attempt}): {answer}\n\n"
+              "Silently decide the 1-3 key ideas a correct answer needs (from the NOTES), then score:\n"
+              "- 100 = all key ideas are there, even if short, paraphrased, in different words, or with typos/grammar mistakes. "
+              "If the answer matches or contains the essence of a model answer, give 100.\n"
+              "- 85-95 = main idea right, only a tiny non-essential detail missing.\n"
+              "- 60-84 = about half of the key ideas.  - 30-59 = vague or partly wrong.  - 0-29 = wrong, off-topic or empty.\n"
+              "Never lower the score for style, length, missing examples, order, or extra correct information.\n"
+              "FEEDBACK RULES: if the score is 100, write ONE short happy sentence. If it is below 100, COACH step by step so the student can reach the full answer:\n"
+              "  1) one short sentence about what is already right (if this is a later attempt, say what was fixed);\n"
+              "  2) 1-3 numbered steps saying exactly what to add or fix NEXT (only the problems that remain);\n"
+              + ("  3) because this is attempt 3 or later, also write the complete model answer in 2-3 sentences;\n" if attempt >= 3 else "  3) give hints, do not write the whole answer yet;\n") +
+              "  4) end with a short encouragement to edit the answer and send it again.\n"
+              f"Write your reply in {ui}, at most 110 words. Use EXACTLY this format:\nSCORE: <integer 0-100>\n<feedback>")
     buf, err = "", None
     for _ in range(2):
         buf = ""
@@ -523,7 +553,7 @@ def t_grade(uid, lid, key):
                 elif len(buf) > 40 and "score" not in buf[:12].lower(): rec["text"] = buf
         try:
             gen(uid, prompt, system="You grade fairly using the notes. Follow the output format exactly.", on_text=on_text, max_tokens=2048,
-                cancel=lambda: lid not in LES or uid not in U, prefer="cheap")
+                cancel=lambda: lid not in LES or uid not in U, prefer="cheap", temperature=0.2)
             err = None; break
         except GeminiError as e:
             err = e
@@ -537,18 +567,24 @@ def t_grade(uid, lid, key):
             if m: rec["score"] = min(100, int(m.group(1))); rec["text"] = (buf + "\n")[m.end():].strip()
             else: rec["text"] = buf.strip()
             if rec["score"] is None: rec["score"] = 50
+            if rec["score"] >= GRADE_FULL_AT: rec["score"] = 100          # "practically perfect" counts as perfect
             rec["status"] = "done"; _reward(uid, lid, rec)
     save_progress(uid, lid); save_user(uid)
 
 
 def _reward(uid, lid, rec):
-    s = rec["score"]
-    add_xp(uid, 10 if s >= 70 else 5 if s >= 50 else 2)
-    if s < 50 and not U[uid]["is_admin"]:                      # < 50 costs a heart (admin never loses hearts)
+    sc, attempt, best = rec["score"], rec.get("attempt", 1), rec.get("best", 0)
+    tier = lambda v: 10 if v >= 70 else 5 if v >= 50 else 2
+    gain = tier(sc) if attempt == 1 else max(0, tier(sc) - tier(best))        # re-trying only pays for real improvement
+    if sc >= 100 and best < 100: gain += 5                                    # bonus the first time the answer becomes perfect
+    if gain: add_xp(uid, gain)
+    lost = sc < 50 and attempt == 1 and not U[uid]["is_admin"]                # < 50 costs a heart (first try only; admin never)
+    if lost:
         st = stats(uid); st["hearts"] = max(0, st["hearts"] - 1); st["hearts_ts"] = time.time()
-    if s >= 100: give_badge(uid, "perfect")
+    rec["best"] = max(best, sc)
+    if sc >= 100: give_badge(uid, "perfect")
     q = next((q for q in LES[lid]["course"]["questions"] if q["id"] == rec["qid"]), {})
-    notify(uid, "graded", lesson=lid, key=rec["key"], sid=rec["sid"], qid=rec["qid"], score=s, q=q.get("text", "")[:90], lost_heart=(s < 50 and not U[uid]["is_admin"]))
+    notify(uid, "graded", lesson=lid, key=rec["key"], sid=rec["sid"], qid=rec["qid"], score=sc, q=q.get("text", "")[:90], lost_heart=lost)
     if rec.get("exam"):
         P = get_prog(uid, lid); ex = next((e for e in P["exams"] if e["id"] == rec["exam"]), None)
         if ex and not ex.get("done") and all(P["answers"].get(f"{ex['id']}:{x}", {}).get("status") == "done" for x in ex["qids"]):
@@ -651,8 +687,11 @@ def retry(uid, lid, what, sid=None, key=None):
 
 
 # ------------------------------------------------------------------ pass rule (75%), reset, chests
-def stage_stats_for(uid, lid):
-    L = LES[lid]; P = get_prog(uid, lid); out = {}
+def stage_stats_for(uid, lid): return _stats_from(LES[lid], get_prog(uid, lid))
+
+
+def _stats_from(L, P):
+    out = {}
     for s in L["course"]["stages"]:
         qids = s["question_ids"]; total = len(qids)
         recs = [P["answers"].get(f"{s['id']}:{q}") for q in qids]
@@ -694,13 +733,19 @@ def submit_answer(uid, lid, qid, answer, exam_id=None):
         regen_hearts(uid)
         if not U[uid]["is_admin"] and stats(uid)["hearts"] <= 0: raise ValueError("no_hearts")
         sg = LES[lid]["course"]["stages"]; idx = next(i for i, x in enumerate(sg) if x["id"] == sid)
-        if idx > 0 and not stage_stats_for(uid, lid)[sg[idx - 1]["id"]]["passed"]: raise ValueError("locked")
+        if idx > 0 and not U[uid]["is_admin"] and not stage_stats_for(uid, lid)[sg[idx - 1]["id"]]["passed"]: raise ValueError("locked")
         key = f"{exam_id or sid}:{qid}"
         if exam_id and not any(e["id"] == exam_id and qid in e["qids"] for e in P["exams"]): raise ValueError("bad_exam")
         old = P["answers"].get(key)
         if old and old["status"] in ("queued", "grading"): return key
+        if old and exam_id and old["status"] == "done": raise ValueError("answered")            # the exam is one shot
+        hist = list(old.get("history", [])) if old else []
+        if old and old["status"] == "done": hist.append({"answer": old["answer"], "score": old["score"], "text": old["text"]})
+        attempt = (old.get("attempt", 1) + (1 if old["status"] == "done" else 0)) if old else 1
+        best = max(old.get("best", 0), old["score"] or 0) if old else 0
         P["answers"][key] = {"key": key, "sid": sid, "qid": qid, "exam": exam_id, "answer": answer[:4000], "status": "queued", "text": "",
-                             "score": None, "error": None, "ts": time.time(), "lang": U[uid]["d"]["lang"]}
+                             "score": None, "error": None, "ts": time.time(), "lang": U[uid]["d"]["lang"],
+                             "history": hist[-8:], "attempt": attempt, "best": best}
         touch_streak(uid); give_badge(uid, "first_answer"); stage = _stage(lid, sid)
         if not exam_id and sid not in P["stage_done"] and all(f"{sid}:{x}" in P["answers"] for x in stage["question_ids"]):
             P["stage_done"][sid] = {"ts": time.time()}; add_xp(uid, 20, 5); give_badge(uid, "stage1")
@@ -722,7 +767,7 @@ def start_exam(uid, lid):
     with LOCK:
         if not visible(uid, lid): raise ValueError("bad_request")
         P = get_prog(uid, lid)
-        if not all(v["passed"] for v in stage_stats_for(uid, lid).values()): raise ValueError("locked")
+        if not U[uid]["is_admin"] and not all(v["passed"] for v in stage_stats_for(uid, lid).values()): raise ValueError("locked")
         cur = next((e for e in P["exams"] if not e.get("done") and not all(f"{e['id']}:{x}" in P["answers"] for x in e["qids"])), None)
         if cur: return cur["id"]
         ids = [q["id"] for q in LES[lid]["course"]["questions"]]; random.shuffle(ids)
@@ -763,11 +808,14 @@ def import_lesson(uid, data):
 
 
 # ------------------------------------------------------------------ admin
-def set_sharing(lid, user_ids, all_users):
+def set_sharing(actor, lid, user_ids, all_users):
+    """Admin: any user. Teacher (owner of the lesson): students only. Nobody can share with / see the admin account."""
     with LOCK:
         L = LES.get(lid)
-        if not L: raise ValueError("bad_request")
-        L["shared"] = [int(x) for x in user_ids if int(x) in U and int(x) != L["owner"]]; L["shared_all"] = bool(all_users)
+        if not L or not manages(actor, lid): raise ValueError("forbidden")
+        a = U[actor]
+        allowed = {uid for uid, u in U.items() if not u["is_admin"] and uid != L["owner"] and (a["is_admin"] or u["role"] == "student")}
+        L["shared"] = [int(x) for x in user_ids if int(x) in allowed]; L["shared_all"] = bool(all_users)
     save_course(lid)
 
 
@@ -776,12 +824,170 @@ def admin_overview():
         users = []
         for uid, u in U.items():
             st = u["d"]["stats"]
-            users.append({"id": uid, "username": u["username"], "is_admin": u["is_admin"], "disabled": u["disabled"], "has_key": bool(dec(u["d"].get("own_key", ""))),
-                          "xp": st["xp"], "gems": st["gems"], "hearts": st["hearts"], "streak": st["streak"],
+            users.append({"id": uid, "username": u["username"], "role": u["role"], "is_admin": u["is_admin"], "disabled": u["disabled"], "has_key": bool(dec(u["d"].get("own_key", ""))),
+                          "xp": st["xp"], "gems": st["gems"], "hearts": st["hearts"], "streak": st["streak"], "last_active": u["d"].get("last_active", 0),
                           "lessons": len([1 for L in LES.values() if L["owner"] == uid])})
         lessons = [{"id": lid, "title": L["course"]["title"], "owner": L["owner"], "owner_name": U.get(L["owner"], {}).get("username", "?"), "status": L["course"]["status"],
                     "shared": L["shared"], "shared_all": L["shared_all"], "stages": len(L["course"]["stages"])} for lid, L in LES.items()]
         return {"users": users, "lessons": sorted(lessons, key=lambda x: x["title"])}
+
+
+def monitor(viewer):
+    """Teacher: students only (never the admin). Admin: teachers and students."""
+    with LOCK:
+        v = U[viewer]
+        if not (v["is_admin"] or v["is_teacher"]): raise ValueError("forbidden")
+        out = []
+        for uid, u in U.items():
+            if u["is_admin"] or uid == viewer or (not v["is_admin"] and u["role"] != "student"): continue
+            lessons = []
+            for lid in visible_ids(viewer):
+                P = PROG.get((uid, lid))
+                if not P and not visible(uid, lid): continue
+                P = P or _empty_progress(); L = LES[lid]; ss = _stats_from(L, P)
+                avgs = [x["avg"] for x in ss.values() if x["avg"] is not None]
+                lessons.append({"id": lid, "title": L["course"]["title"], "stages": len(ss), "passed": len([1 for x in ss.values() if x["passed"]]),
+                                "answered": sum(x["answered"] for x in ss.values()), "total_q": sum(x["total"] for x in ss.values()),
+                                "avg": round(sum(avgs) / len(avgs)) if avgs else None,
+                                "attempts": sum(r.get("attempt", 1) for r in P["answers"].values() if not r.get("exam")),
+                                "stage_list": [{"title": st["title"], **ss[st["id"]]} for st in L["course"]["stages"]]})
+            st = u["d"]["stats"]
+            out.append({"id": uid, "username": u["username"], "role": u["role"], "disabled": u["disabled"], "last_active": u["d"].get("last_active", 0),
+                        "xp": st["xp"], "streak": st["streak"], "gems": st["gems"], "hearts": st["hearts"], "lessons": lessons})
+        return {"users": sorted(out, key=lambda x: x["username"].lower())}
+
+
+# ------------------------------------------------------------------ characters, colours and phrases (admin controlled)
+BUILTIN_CHARS = ("fox", "panda", "robot")
+BUILTIN_ANIM = {"fox": "bounce", "panda": "wiggle", "robot": "zoom"}
+HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+IMG_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$")
+CH = {"customs": [], "themes": {}, "phrases": [], "modes": {}, "v": 1}
+
+
+def default_phrases():
+    L, n = [], [0]
+
+    def add(texts, target="all", lang="tr", kind="click"):
+        for t in texts:
+            n[0] += 1; L.append({"id": f"p{n[0]}", "text": t, "target": target, "lang": lang, "kind": kind})
+    add(["Hihi, gıdıklanıyorum!", "Hey! 😄", "Çalışmaya devam!", "Beni sevdin mi? 🧡", "Bugün harika gidiyorsun!", "Bir soru daha, sonra mola 😉", "Takıldığın yeri bana sor!", "Bana tıklamayı bırak da ders çalış! 😄"])
+    add(["هههه، أنت تدغدغني!", "مرحبًا! 😄", "واصل الدراسة!", "هل تحبني؟ 🧡", "أنت رائع اليوم!", "سؤال آخر ثم استراحة 😉", "اسألني عما لم تفهمه!", "كفى نقرًا، أكمل درسك! 😄"], lang="ar")
+    add(["Kuyruğum kıpır kıpır! 🦊", "Tilkiler çok hızlı öğrenir!"], "fox"); add(["ذيلي يتحرك من الحماس! 🦊", "الثعالب تتعلم بسرعة!"], "fox", "ar")
+    add(["Bambu zamanı... ama önce ders! 🐼", "Yavaş ama sağlam öğreniyorum 🐼"], "panda"); add(["وقت الخيزران... لكن الدرس أولًا! 🐼", "أتعلم ببطء لكن بثبات 🐼"], "panda", "ar")
+    add(["BİP BİP! Sistem hazır 🤖", "Hesaplıyorum: sen başarırsın! 🤖"], "robot"); add(["بيب بيب! النظام جاهز 🤖", "حساباتي تقول: ستنجح! 🤖"], "robot", "ar")
+    add(["Harikasın! 💪", "Bir aşama daha, hadi!", "Sorabilirsin, buradayım!", "Bugün de seriyi koru 🔥", "Küçük adımlar büyük başarı!", "Anlamadığın yeri bana sor 💬"], kind="bubble")
+    add(["أنت رائع! 💪", "مرحلة أخرى، هيا!", "اسألني، أنا هنا!", "حافظ على تتابعك اليوم 🔥", "خطوات صغيرة، نجاح كبير!", "اسألني عما لم تفهمه 💬"], lang="ar", kind="bubble")
+    return L
+
+
+def load_chars():
+    def g(k, d):
+        try: return json.loads(get_setting(k) or "null") or d
+        except Exception: return d
+    CH["customs"], CH["themes"], CH["modes"] = g("characters", []), g("themes", {}), g("phrase_modes", {})
+    ph = g("phrases", None)
+    if ph is None: ph = default_phrases(); set_setting("phrases", _j(ph))
+    CH["phrases"] = ph; CH["v"] = int(get_setting("chars_v", "1") or 1)
+
+
+def _chars_save():
+    CH["v"] += 1
+    for k, key in (("customs", "characters"), ("themes", "themes"), ("phrases", "phrases"), ("modes", "phrase_modes")): set_setting(key, _j(CH[k]))
+    set_setting("chars_v", str(CH["v"]))
+
+
+def char_ids(): return list(BUILTIN_CHARS) + [c["id"] for c in CH["customs"]]
+
+
+def chars_public():
+    chars = [{"id": i, "name": MASCOT_NAME[i], "builtin": True, "anim": BUILTIN_ANIM[i], "voice": i, "title": None, "theme": CH["themes"].get(i)} for i in BUILTIN_CHARS]
+    chars += [{"id": c["id"], "name": c["name"], "builtin": False, "image": c["image"], "anim": c["anim"], "voice": c["voice"], "title": c["title"], "persona": c["persona"], "theme": CH["themes"].get(c["id"])} for c in CH["customs"]]
+    return {"characters": chars, "phrases": CH["phrases"], "modes": CH["modes"], "v": CH["v"]}
+
+
+def _check_theme(t):
+    keys = ("pri", "sec", "bg", "card", "txt")
+    if not isinstance(t, dict) or any(not isinstance(t.get(k), str) or not HEX.match(t[k]) for k in keys): raise ValueError("bad_color")
+    return {k: t[k].lower() for k in keys}
+
+
+def admin_set_theme(cid, theme):
+    with LOCK:
+        if cid not in char_ids(): raise ValueError("bad_char")
+        if theme is None: CH["themes"].pop(cid, None)
+        else: CH["themes"][cid] = _check_theme(theme)
+        _chars_save()
+
+
+def admin_save_character(d):
+    import binascii
+    with LOCK:
+        cid = str(d.get("id") or "").strip(); existing = next((c for c in CH["customs"] if c["id"] == cid), None) if cid else None
+        name = str(d.get("name") or "").strip()[:24]
+        if not name: raise ValueError("bad_name")
+        anim = d.get("anim") if d.get("anim") in ("bounce", "jump", "roll", "zoom", "wiggle") else "bounce"
+        voice = d.get("voice") if d.get("voice") in BUILTIN_CHARS else "fox"
+        image = d.get("image")
+        if image:
+            m = IMG_RE.match(image)
+            if not m: raise ValueError("bad_image")
+            try: raw = base64.b64decode(m.group(2), validate=True)
+            except (binascii.Error, ValueError): raise ValueError("bad_image")
+            ok = {"png": raw[:4] == b"\x89PNG", "jpeg": raw[:2] == b"\xff\xd8", "gif": raw[:4] == b"GIF8", "webp": raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"}[m.group(1)]
+            if len(raw) > 400_000 or not ok: raise ValueError("bad_image")
+        elif existing: image = existing["image"]
+        else: raise ValueError("bad_image")
+        rec = {"name": name, "image": image, "anim": anim, "voice": voice, "persona": str(d.get("persona") or "").strip()[:200], "title": (str(d.get("title") or "").strip()[:30] or name + " Study")}
+        if existing: existing.update(rec); cid = existing["id"]
+        else:
+            if len(CH["customs"]) >= 20: raise ValueError("too_many")
+            base = re.sub(r"[^a-z0-9]+", "", name.lower())[:16] or "char"; cid = base
+            while cid in char_ids(): cid = base + secrets.token_hex(2)
+            CH["customs"].append({"id": cid, **rec})
+        if d.get("theme"): CH["themes"][cid] = _check_theme(d["theme"])
+        _chars_save(); return cid
+
+
+def admin_delete_character(cid):
+    with LOCK:
+        if cid in BUILTIN_CHARS or not any(c["id"] == cid for c in CH["customs"]): raise ValueError("bad_char")
+        CH["customs"] = [c for c in CH["customs"] if c["id"] != cid]; CH["themes"].pop(cid, None); CH["modes"].pop(cid, None)
+        CH["phrases"] = [p for p in CH["phrases"] if p["target"] != cid]
+        for uid, u in U.items():
+            if u["d"].get("mascot") == cid: u["d"]["mascot"] = "fox"; save_user(uid)
+        _chars_save()
+
+
+def admin_phrase(action, d):
+    with LOCK:
+        targets = set(char_ids()) | {"all"}
+        if action == "delete":
+            CH["phrases"] = [p for p in CH["phrases"] if p["id"] != d.get("id")]
+        else:
+            text = str(d.get("text") or "").strip()[:120]
+            target, lang, kind = d.get("target", "all"), d.get("lang", "any"), d.get("kind", "click")
+            if not text or target not in targets or lang not in ("any", "tr", "ar") or kind not in ("click", "bubble", "both"): raise ValueError("bad_phrase")
+            if action == "update":
+                p = next((p for p in CH["phrases"] if p["id"] == d.get("id")), None)
+                if not p: raise ValueError("bad_phrase")
+                p.update(text=text, target=target, lang=lang, kind=kind)
+            else:
+                if len(CH["phrases"]) >= 300: raise ValueError("too_many")
+                CH["phrases"].append({"id": "p" + secrets.token_hex(4), "text": text, "target": target, "lang": lang, "kind": kind})
+        _chars_save()
+
+
+def admin_phrase_mode(target, mode):
+    with LOCK:
+        if target not in (set(char_ids()) | {"all"}) or mode not in ("random", "sequence"): raise ValueError("bad_phrase")
+        CH["modes"][target] = mode; _chars_save()
+
+
+def char_persona(mascot):
+    c = next((c for c in CH["customs"] if c["id"] == mascot), None)
+    if c: return c["name"], c["persona"] or "a friendly mascot"
+    return MASCOT_NAME.get(mascot, "Foxy"), MASCOT_LOOK.get(mascot, "a friendly mascot")
 
 
 def migrate_legacy(admin_uid):
@@ -823,7 +1029,7 @@ def migrate_legacy(admin_uid):
 # ------------------------------------------------------------------ state for the UI
 def me(uid):
     u = U[uid]; own = dec(u["d"].get("own_key", "")); ctx = ai_ctx(uid)
-    return {"id": uid, "username": u["username"], "is_admin": u["is_admin"], "can_ai": can_ai(uid), "can_upload": can_ai(uid),
+    return {"id": uid, "username": u["username"], "role": u["role"], "is_admin": u["is_admin"], "is_teacher": u["is_teacher"], "can_ai": can_ai(uid), "can_upload": can_upload(uid),
             "has_own_key": bool(own) or (u["is_admin"] and bool(ctx["key"])), "key_source": ctx["source"],
             "key_hint": ("•••• " + (own if not u["is_admin"] else ctx["key"])[-4:]) if (own or (u["is_admin"] and ctx["key"])) else ""}
 
@@ -836,7 +1042,7 @@ def state(uid):
             lessons.append({"id": lid, "title": c["title"], "status": c["status"], "created": c["created"], "total_q": len(c["questions"]),
                             "answered": len([k for k in P["answers"] if not P["answers"][k].get("exam")]), "stages": len(sg),
                             "ready": len([s for s in sg if s["status"] == "ready"]), "mine": L["owner"] == uid, "can_manage": manages(uid, lid),
-                            "owner_name": U.get(L["owner"], {}).get("username", "?")})
+                            "owner_name": ("admin" if U.get(L["owner"], {}).get("is_admin") and not u["is_admin"] else U.get(L["owner"], {}).get("username", "?"))})
         course = progress = None
         if active:
             course = json.loads(json.dumps(LES[active]["course"]))
@@ -845,18 +1051,37 @@ def state(uid):
         st = dict(d["stats"])
         if st["last_day"] not in (_day(), _day(1)): st["streak"] = 0
         if st["last_day"] != _day(): st["daily_xp"] = 0
+        st["xp_avail"] = max(0, st["xp"] - st.get("xp_spent", 0))
         ai = ai_status(uid); ctx = ai_ctx(uid)
         if not can_ai(uid): ai = {"state": ai["state"] if ai["state"] in ("ok", "cooling", "quota", "nokey", "unknown") else "error", "cooldown_left": ai["cooldown_left"], "exhausted": [], "fallback": "", "mode": "", "primary": "", "model": "", "message": ""}
         ai["key_source"] = ctx["source"]
         out = {"me": me(uid), "settings": {"lang": d["lang"], "mascot": d["mascot"], "sound": d["sound"], "active": active, "offline": bool(d["offline"]) if can_ai(uid) else False,
                                            "model": (get_setting("default_model") if u["is_admin"] else d["model"]) if can_ai(uid) else ""},
                "stats": st, "lessons": lessons, "course": course, "progress": progress, "notifications": list(reversed(d["notifications"]))[:40], "ai": ai,
-               "server_time": time.time(), "constants": {"heart_price": HEART_PRICE}}
+               "server_time": time.time(), "constants": {"heart_price": HEART_PRICE, "cv": CH["v"]}}
     out["busy"] = WORKER.busy_for(uid)
     return out
 
 
 # ------------------------------------------------------------------ helper chat (streamed)
+APP_GUIDE = """ABOUT THE APP (answer questions about how to use it, with exact steps; labels are given in Turkish / Arabic):
+- Map (Learn tab / 'Öğren' / 'تعلّم'): each star node is a stage. Tap it: first short lesson cards, then written questions. The AI checks the answers (it may take a moment: you can tap Next and a 🔔 notification arrives).
+- Passing a stage: the AVERAGE score of all its questions must be at least 75%. Only then the next stage opens (until then it stays grey 🔒). Failed? Re-answer single questions (tap them in the result list, 'Try again') or tap the 🏋️ dumbbell under the stage to delete its answers and redo it. ↻ in the 📚 menu resets the whole lesson.
+- Final exam 🏆 (end of the map): opens when ALL stages are passed with 75%+. It has 10 random questions from the whole lesson.
+- Chests 🎁 (after each stage): tap after passing the stage: +10 gems and +15 XP, once.
+- XP ⚡: earned by answering (good answers give more). It is lifetime progress: level = XP/100 and badges use it.
+- Gems 💎: get them in the Shop (🛒 'Mağaza' / 'المتجر', bottom tab on phone, or tap the 💎 or ❤️ chip at the top) by exchanging XP: 10 XP = 1 gem (spent XP does not lower your level). Chests and finishing a stage also give gems.
+- Hearts ❤️: a score under 50 on an answer costs 1 heart. With 0 hearts you cannot answer. Buy hearts in the Shop: 1 heart = 5 gems, all hearts = 20 gems. 1 heart also comes back free every 30 minutes.
+- Badges and the daily goal are in the Profile tab (phone) or the right column (computer).
+- 📚 menu (top): switch lessons, reset a lesson, export a lesson as a .foxy file (only the owner/admin) and import a .foxy file someone sent you (it opens without using the AI).
+- ⚙️ settings: language (Turkish/Arabic), character (Foxy/Pandi/Robo; the colours follow the character), sound and volume, change password, logout. Adding YOUR OWN Gemini API key there lets you upload your own lessons (they are private; the admin decides who else sees them).
+- Only admin / people with their own key see the Internet switch (🌐/✈️ stops all AI requests), the AI model choice and the connection test.
+- The logo (top-left) goes back to the home page. ◀ Previous goes to the previous question. 🔔 shows notifications and the AI feedback; ✕ deletes one, 'Delete all' clears them.
+- Admin 🛡️ panel: create friend accounts, give gems/XP/hearts, choose who can see each lesson, set the shared API key and model.
+- To install on a phone: open the site in Chrome, menu ⋮ → 'Install app' / 'Add to Home screen' (iPhone: Safari → Share → Add to Home Screen).
+"""
+
+
 def chat_stream(uid, lid, sid, qid, message, history):
     with LOCK:
         d = U[uid]["d"]; mascot, ui = d["mascot"], LANG_NAME.get(d["lang"], "Turkish"); ctx = ""
@@ -865,9 +1090,12 @@ def chat_stream(uid, lid, sid, qid, message, history):
             if st: ctx += f'Current topic: {st["title"]}\nNOTES:\n{st["notes"][:8000]}\n'
             q = next((q for q in L["course"]["questions"] if q["id"] == qid), None) if qid else None
             if q: ctx += f'The student is looking at this question: {q["text"]}\n'
-    system = (f"You are {MASCOT_NAME.get(mascot, 'Foxy')}, {MASCOT_LOOK.get(mascot, 'a friendly mascot')} who helps a student study. "
+    role = ("The user is the ADMIN." if U[uid]["is_admin"] else "The user is a normal friend account." + (" They have their own API key, so they can upload lessons." if can_ai(uid) else " They have no own key, so they cannot upload lessons (only import .foxy files)."))
+    pname, plook = char_persona(mascot)
+    system = (f"You are {pname}, {plook}, who helps a student study AND explains how this study app works. "
               f"ALWAYS answer in {ui}. Be warm, short and simple (max ~120 words), use the notes when relevant, explain step by step if asked, "
-              "and translate any text when asked. Do not just give away the answer to a question the student is practising unless they ask for it.\n" + ctx)
+              "and translate any text when asked. Do not just give away the answer to a question the student is practising unless they ask for it. "
+              "When the question is about using the app, answer with clear short steps from the guide below (do not invent features).\n" + role + "\n" + APP_GUIDE + ctx)
     contents = [{"role": "user" if h.get("role") == "user" else "model", "parts": [{"text": str(h.get("text", ""))[:1500]}]} for h in (history or [])[-6:]]
     contents.append({"role": "user", "parts": [{"text": message[:2000]}]})
     q, stop = queue.Queue(), threading.Event()
@@ -889,4 +1117,4 @@ def chat_stream(uid, lid, sid, qid, message, history):
 
 
 def init():
-    load_all(); WORKER.start(); resume_all()
+    load_all(); load_chars(); WORKER.start(); resume_all()

@@ -264,3 +264,31 @@ input.txt,select.txt{width:100%;border:2px solid var(--line);border-radius:12px;
   .chip.ai.ok,.chip.ai.unknown{display:none}
   .lesson-btn span{max-width:34vw}
 }
+
+/* v5: centred goal ring, shop exchange, chat chips */
+.goal-row{flex-direction:column;justify-content:center;text-align:center;gap:8px}.goal h3{text-align:center}
+.ring-svg{width:112px;height:112px}.ring-core{fill:var(--card);filter:drop-shadow(0 1px 2px rgba(0,0,0,.15))}
+.goal.hit .ring-svg{filter:drop-shadow(0 0 8px rgba(255,200,0,.75))}
+.ex-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.ex-row .btn{flex:1 1 auto;padding:10px 12px;font-size:14px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chipq{border:2px solid var(--line);border-radius:14px;padding:6px 10px;font-size:13px;background:var(--card);font-weight:800}.chipq:hover{border-color:var(--pri)}
+
+/* v6: custom characters, history, teacher/admin */
+.mascot.custom img{width:100%;height:100%;object-fit:contain;display:block;pointer-events:none;user-select:none}
+.custom.anim-bounce,.custom.anim-jump{animation:bob 2.8s ease-in-out infinite}.custom.anim-roll{animation:tilt2 3.4s ease-in-out infinite}
+.custom.anim-zoom{animation:hover 2.2s ease-in-out infinite}.custom.anim-wiggle{animation:wiggle2 2.6s ease-in-out infinite}
+.custom.anim-bounce.celebrate,.custom.anim-jump.celebrate{animation:jump .85s ease-out}.custom.anim-roll.celebrate{animation:roll 1s ease-in-out}
+.custom.anim-zoom.celebrate{animation:zoom 1s ease-in-out}.custom.anim-wiggle.celebrate{animation:shake .7s}
+.custom.sad{animation:shake .6s}.custom.talk{animation:talkbob .3s infinite alternate}.mascot.custom.cry{animation:bob 3s ease-in-out infinite}
+@keyframes tilt2{50%{transform:rotate(-5deg)}}@keyframes wiggle2{25%{transform:rotate(4deg)}75%{transform:rotate(-4deg)}}@keyframes talkbob{to{transform:scale(1.06,.95)}}
+.mpick{flex-wrap:wrap}.mpick button{flex:1 1 28%;min-width:84px}
+.hist-item{margin:8px 0;padding:10px 14px}.hist-h{font-weight:900;display:flex;gap:8px;align-items:center}.hist-a{color:var(--mut);margin:4px 0;white-space:pre-wrap;font-size:14px}.hist-f{margin:4px 0 0;white-space:pre-wrap;line-height:1.55}
+.sheet .edit-hint{font-size:13px;margin:0 0 8px;opacity:.9}
+.theme-row{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:8px 0}.theme-row label{font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:4px;align-items:center}.theme-row input[type=color]{width:100%;height:38px;border:2px solid var(--line);border-radius:10px;padding:2px;background:var(--card)}
+.theme-prev{border-radius:14px;padding:12px;margin:8px 0;border:2px solid var(--line)}.theme-prev .tp-card{border-radius:12px;padding:10px;margin-top:8px;font-weight:800}.theme-prev .tp-btn{display:inline-block;padding:8px 16px;border-radius:12px;font-weight:900}
+.char-av{width:34px;height:34px;display:inline-block;vertical-align:middle}.char-av .mascot{width:34px;height:34px}
+.prow{display:grid;grid-template-columns:1fr;gap:6px;padding:8px 0;border-bottom:1px solid var(--line)}.prow .sel{display:flex;gap:6px;flex-wrap:wrap}.prow select{flex:1;min-width:90px}
+select.txt,.txt-sel{width:100%;border:2px solid var(--line);border-radius:12px;padding:8px;font:inherit;background:var(--card);color:var(--txt)}
+.bar-mini{height:10px;background:var(--line);border-radius:6px;overflow:hidden;min-width:80px}.bar-mini i{display:block;height:100%;background:var(--pri)}
+.mon-lesson{border-top:1px solid var(--line);padding:8px 0}.pill.p-none{background:var(--line);color:var(--mut)}
+textarea.txt{min-height:70px}
+@media(max-width:1350px){.chip .lbl{display:none}}

@@ -1,3 +1,31 @@
+# Foxy Study v6
+
+## Roller / الأدوار
+| | Yönetici (admin) | Öğretmen | Öğrenci |
+|---|---|---|---|
+| Ders yükleme | ✅ (ortak anahtar) | ✅ (admin'in ortak anahtarıyla; anahtarı görmez) | yalnızca kendi API anahtarını eklerse |
+| Öğrenci takibi 📊 | herkes (öğretmen + öğrenci) | yalnızca öğrenciler (admin hesabını görmez) | ❌ |
+| Ders paylaşımı | her dersi herkesle | kendi derslerini öğrencilerle | ❌ |
+| Hesap/karakter/renk/cümle yönetimi | ✅ | ❌ | ❌ |
+| Aşama kilidi (%75) / can | kilit yok, can bitmez | normal | normal |
+
+## Cevap koçluğu
+Cevap 100'ün altındaysa yapay zekâ adım adım nasıl tamamlanacağını anlatır; **✏️ Cevabı düzenle** ile cevabı değiştirip tekrar gönderirsin, önceki cevaplar ve geri bildirimler altta kalır, kalan eksikler için devam eder. 3. denemeden sonra örnek cevabı da yazar. Kontrol bitmeden sonraki soruya geçilemez. Tekrar denemeler sadece gerçek gelişimde XP verir, can sadece ilk denemede düşer, tam puana ilk ulaşınca +5 XP bonus. (Sınavda tek deneme.)
+
+## Karakterler, renkler, cümleler (🛡️ Yönetim)
+- **Karakter ekle:** ad, site başlığı, resim, animasyon, ses tonu, kişilik (yapay zekâ nasıl konuşsun) ve renkler.
+- **Renkler:** her karakter (hazır olanlar dahil) için ana/ikincil/arka plan/kart/yazı rengi; canlı önizleme.
+- **Cümleler:** tıklayınca veya köşe balonunda söylenir; tüm karakterler ya da tek karakter için; **rastgele** veya **sırayla** (1., 2., 3. tık...). Hazır cümleleri de değiştirebilir/silebilirsin.
+
+## Supabase (PostgreSQL) ile veri saklama
+1. supabase.com → New project → **Project Settings → Database → Connection string**. IPv4 ile uyumlu **Pooler** adresini (Transaction pooler, port 6543) kopyala ve `[YOUR-PASSWORD]` yerine şifreni yaz.
+2. Barındırma servisinde **Environment Variables** → `DATABASE_URL` = o adres. Ayrıca `APP_SECRET` (uzun rastgele metin) ve `COOKIE_SECURE=1`.
+3. İlk açılışta tablolar otomatik oluşur ve **Row Level Security açılır** (Supabase'in herkese açık REST API'si veriye erişemesin diye). Disk (volume) gerekmez.
+4. Bilgisayarında zaten `data/app.db` varsa ve Supabase boşsa, `DATABASE_URL` ile bir kez `python app.py` çalıştırmak yerel verileri Supabase'e kopyalar.
+5. `DATABASE_URL` yoksa SQLite kullanılır (yerel kullanım).
+⚠️ Vercel gibi "serverless" servisler uygun değil: uygulama sürekli çalışan tek süreç ve arka plan iş parçacıkları ister (Render, Railway, Fly.io, VPS uygundur).
+
+---
 # Foxy Study — çok kullanıcılı / متعدد المستخدمين
 
 ## 1) İlk çalıştırma / التشغيل الأول
